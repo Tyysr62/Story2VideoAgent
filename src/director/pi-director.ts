@@ -6,6 +6,9 @@ import { AppError, validateStoryboard, type Storyboard } from '../domain/storybo
 export type DirectorStream = ModelRuntime['streamSimple'];
 export interface Planner { plan(story: string, signal?: AbortSignal): Promise<Storyboard>; }
 interface Options { apiKey: string; model?: string; baseUrl?: string; stream?: DirectorStream; timeoutMs?: number; allowedDurations?: number[]; }
+// Verified on 2026-10-22 against DeepSeek Vision docs and the OpenRouter model page.
+// Keep unverified/custom models conservative instead of enabling image input globally.
+const imageInputModels = new Set(['deepseek-flash', 'deepseek/deepseek-v4.1-flash-1017']);
 const prompt = `你是短片导演。把用户故事规划为可拍摄的结构化分镜。
 根据情节、动作变化、场景与节奏自主决定镜头数量，必须为1到20个，不要求固定数量。不要为凑数拆镜头。
 保持角色外观、服装、画风一致，完整覆盖故事。每个镜头写具体场景动作、摄影方式、文生图和文生视频提示词。
@@ -26,7 +29,7 @@ export class PiDirector implements Planner {
     const modelId = this.options.model || 'deepseek-flash';
     runtime.registerProvider('story-deepseek', { baseUrl: this.options.baseUrl || 'https://api.deepseek.com', apiKey: this.options.apiKey,
       api: 'openai-completions', authHeader: true,
-      models: [{ id: modelId, name: `DeepSeek / ${modelId}`, reasoning: false, input: ['text'], contextWindow: 65536, maxTokens: 12000,
+      models: [{ id: modelId, name: `DeepSeek / ${modelId}`, reasoning: false, input: imageInputModels.has(modelId) ? ['text', 'image'] : ['text'], contextWindow: 65536, maxTokens: 12000,
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }] });
     const model = runtime.getModel('story-deepseek', modelId)!;
     const original = runtime.streamSimple.bind(runtime); let turns = 0;

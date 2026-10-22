@@ -30,6 +30,8 @@ npm start
 | 文生视频 | `minimax/hailuo-3-max`，480p，16:9，关闭音频生成 |
 | 最终拼接 | 本地 FFmpeg，统一输出 1280×720 / 24fps / 静音 MP4 |
 
+DeepSeek 能力更正（2026-10-22）：当前官方 `deepseek-flash` 对应 V4.1 Flash 1017，支持原生文本 + 图片输入；本项目默认 OpenRouter 模型也属于这一版本。Pi 的模型能力声明应包含 `image`，不能因为当前分镜接口只传文本而将模型声明为仅文本。[官方 Vision 文档](https://api-docs.deepseek.com/guides/vision/)、[官方更新日志](https://api-docs.deepseek.com/updates/)、[OpenRouter 模型说明](https://openrouter.ai/deepseek/deepseek-v4.1-flash-1017)。当前 V1 仍只开放文字故事入口；参考图上传、视频抽帧视觉检查与质量反馈需要后续独立模块交付，能力声明修正不代表这些功能已经完成。
+
 价格与能力以 OpenRouter 实时目录为准。2026-10-22 的公开目录快照中，默认图像约 $0.008 / 张，视频 480p 约 $0.05 / 秒；20 个各 5 秒的镜头约 $5.16，**不含分镜模型、重试及其他输入费用**。这只是目录估算，不是账单承诺。界面提供实时目录估算按钮；无法取得报价时显示未知，不伪造价格。
 
 参考：[视频目录](https://openrouter.ai/api/v1/videos/models)、[默认图像端点](https://openrouter.ai/api/v1/images/models/black-forest-labs/flux-3-image-klein/endpoints)、[本次价格快照](docs/model-pricing-snapshot.json)。生成前会校验视频模型支持的时长、分辨率与画幅，当前默认规划提示采用 H3 Max 的 5–15 秒 / 镜头。更换视频模型时还需调整 `main.ts` 的规划时长约束，不能保证仅替换 ID 即兼容。

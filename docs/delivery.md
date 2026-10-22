@@ -32,3 +32,9 @@ All gates run sequentially. The red check precedes the implementation of that mo
 ## Final local result — 2026-10-22
 
 `npm run verify`: exit 0. Vitest: 7 files, 45 tests passed. Playwright / full Microsoft Edge: 3 tests passed. Production bundle built successfully. Desktop/mobile screenshots were visually inspected. Local real-mode health and demo-mode complete composition were checked separately. Credentials/data/dependencies/build output are excluded from Git; no push or deployment was performed.
+
+## Follow-up — DeepSeek image-input capability correction (2026-10-22)
+
+The official [Vision guide](https://api-docs.deepseek.com/guides/vision/) and [release log](https://api-docs.deepseek.com/updates/) confirm native image input for current `deepseek-flash`; [OpenRouter's default model page](https://openrouter.ai/deepseek/deepseek-v4.1-flash-1017) confirms native visual understanding for the configured snapshot. The previous Pi model registration incorrectly declared text-only input. Registration now declares text/image for those verified model IDs and keeps other custom models conservative.
+
+Two capability assertions failed before the fix. After the fix: 9/9 director tests, 2/2 integration tests and `npm run check` passed. No live model call was made. This corrects model metadata; the V1 story HTTP/UI interface still accepts text only. Reference-image ingestion and keyframe quality review remain separate future modules.
