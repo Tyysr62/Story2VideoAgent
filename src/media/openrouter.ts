@@ -1,9 +1,10 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, writeFile, readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { AppError, type Storyboard } from '../domain/storyboard.js';
 import type { MediaBackend, TaskContext } from './ffmpeg.js';
+import type { KeyframeInput } from '../production/m2.js';
 
 export const DEFAULT_VIDEO_MODEL = 'heygen/heygen-video-1';
 export const DEFAULT_IMAGE_MODEL = 'qwen/qwen-image-2.1-turbo';
@@ -84,6 +85,23 @@ export class OpenRouterMedia implements MediaBackend {
     return this.generateImage(shot.imagePrompt, output, '16:9');
   }
   async portrait(prompt: string, output: string) { return this.generateImage(prompt, output, '1:1'); }
+  async validateKeyframe(references: number) {
+    const result = await this.json(`/images/models/${this.imageModel}/endpoints`);
+    const endpoint = (result.endpoints ?? []).find((e: any) => {
+      const p = e.supported_parameters ?? {}; const r = p.input_references;
+      return p.resolution?.values?.includes(this.options.imageResolution || DEFAULT_IMAGE_RESOLUTION) && p.aspect_ratio?.values?.includes('16:9') && p.n?.min <= 1 && p.n?.max >= 1 && (references === 0 || r?.type === 'range' && r.min <= references && r.max >= references) && (result.endpoints.length === 1 || e.provider_tag);
+    });
+    if (!endpoint) throw new AppError(400, `当前图像端点不支持 ${references} 张参考图或所选画幅、分辨率，请调整输入；未提交生图费用`);
+    return { provider: { ...(endpoint.provider_tag ? { only: [endpoint.provider_tag] } : {}), allow_fallbacks: false } };
+  }
+  async keyframe(input: KeyframeInput, output: string) {
+    const routing = await this.validateKeyframe(input.references.length);
+    const references = await Promise.all(input.references.map(async r => {
+      const bytes = await readFile(r.path); if (bytes.length > 10 * 1024 * 1024 || !['image/png', 'image/jpeg', 'image/webp'].includes(r.mime)) throw new AppError(400, '参考图类型或大小不受支持');
+      return { type: 'image_url', image_url: { url: `data:${r.mime};base64,${bytes.toString('base64')}` } };
+    }));
+    return this.generateImage(input.prompt, output, '16:9', { ...routing, ...(references.length ? { input_references: references } : {}) });
+  }
   portraitConfig() { return { model: this.imageModel, parameters: { resolution: this.options.imageResolution || DEFAULT_IMAGE_RESOLUTION, aspect_ratio: '1:1', n: 1 } }; }
   generationConfig(kind: 'image' | 'video' | 'compose') { return kind === 'image' ? { model: this.imageModel, parameters: { resolution: this.options.imageResolution || DEFAULT_IMAGE_RESOLUTION, aspect_ratio: '16:9', n: 1 } } : kind === 'video' ? { model: this.videoModel, parameters: { resolution: this.resolution, aspect_ratio: '16:9', generate_audio: false } } : { model: 'ffmpeg', parameters: { width: 1280, height: 720, fps: 24 } }; }
   async estimatePortrait() {
@@ -91,8 +109,8 @@ export class OpenRouterMedia implements MediaBackend {
     const prices = (endpoint.endpoints ?? []).flatMap((e: any) => e.pricing ?? []).filter((p: any) => p.billable === 'output_image' && p.unit === 'image' && (!p.variant || p.variant === (this.options.imageResolution || DEFAULT_IMAGE_RESOLUTION).toLowerCase())).map((p: any) => Number(p.cost_usd)).filter(Number.isFinite);
     return { imageModel: this.imageModel, imageUsd: prices.length ? Math.min(...prices) : null, checkedAt: new Date().toISOString(), note: '单张候选图目录估算，不含额外输入及重试费用，以供应商账单为准' };
   }
-  private async generateImage(prompt: string, output: string, aspectRatio: string) {
-    const result = await this.json('/images', { model: this.imageModel, prompt, resolution: this.options.imageResolution || DEFAULT_IMAGE_RESOLUTION, aspect_ratio: aspectRatio, n: 1 });
+  private async generateImage(prompt: string, output: string, aspectRatio: string, extra: Record<string, unknown> = {}) {
+    const result = await this.json('/images', { model: this.imageModel, prompt, resolution: this.options.imageResolution || DEFAULT_IMAGE_RESOLUTION, aspect_ratio: aspectRatio, n: 1, ...extra });
     // A 2xx image response may already be billed. Local decoding/storage errors
     // must never turn it back into a safe-to-repeat POST.
     try {

@@ -7,10 +7,11 @@ import { CharacterReferences } from './CharacterReferences.js';
 import { api } from './api.js';
 import { describeEvent } from './event-labels.js';
 import { ProductionLibrary } from './ProductionLibrary.js';
+import { Keyframes } from './Keyframes.js';
 
 type Asset = Omit<Artifact, 'path'> & { url: string };
 type Detail = { project: Project; jobs: Job[]; artifacts: Asset[]; events: ProjectEvent[]; characterLibrary?: CharacterLibrary; portraitJobs?: PortraitJob[] };
-type Config = { plannerConfigured: boolean; mediaConfigured: boolean; simulated: boolean; plannerModel: string; imageModel: string; videoModel: string; resolution: string };
+type Config = { plannerConfigured: boolean; mediaConfigured: boolean; simulated: boolean; plannerModel: string; imageModel: string; videoModel: string; resolution: string; m2Enabled?: boolean };
 type Estimate = { videoUsd: number | null; imageUsd: number | null; seconds: number; checkedAt?: string; note?: string; simulated?: boolean };
 const statuses: Record<string, string> = { draft: '草稿', planning: '规划中', awaiting_approval: '待确认', approved: '已确认', generating: '生成中', ready: '已成片', failed: '执行失败', queued: '等待', running: '执行中', succeeded: '完成', unknown: '状态待核实' };
 const kinds: Record<string, string> = { image: '图像', video: '视频', compose: '成片' };
@@ -109,6 +110,7 @@ export function App() {
           {final && <section className="panel final-panel"><div className="section-row"><h2>成片预览</h2><a className="download" href={`${final.url}?download=1`}>下载 MP4 ↓</a></div><video controls preload="metadata" src={final.url} aria-label="成片预览"/><p className="muted">{final.simulated ? '测试素材合成 · 非真实 AI 成片' : '云端视频生成 · FFmpeg 本地合成 · V1 静音输出'}</p></section>}
           {!!detail?.events.length && <details className="event-log"><summary>执行记录 · {detail.events.length}</summary>{detail.events.slice(-20).reverse().map(e => <div key={e.id}><time dateTime={e.createdAt}>{new Date(e.createdAt).toLocaleTimeString('zh-CN', { hour12: false })}</time><span>{describeEvent(e, { jobs: detail.jobs, portraitJobs: detail.portraitJobs, characterLibrary: library, storyboard: project.storyboard })}</span></div>)}</details>}
         </>}
+        {project && v2 && project.storyboard && config?.m2Enabled && <Keyframes key={`frames-${project.id}`} projectId={project.id} revision={project.revision} refreshKey={JSON.stringify([project.revision, project.status, library?.revision, detail?.events.at(-1)?.id])} disabled={locked} dirty={dirty} rolesApproved={Boolean(library?.approval)} onBusyChange={setRoleBusy} onChanged={() => load(project.id)}/>}
         {project && <ProductionLibrary key={project.id} projectId={project.id} refreshKey={JSON.stringify([project.revision, project.status, library?.revision, detail?.events.at(-1)?.id])}/>}
         <footer><span>STORY AGENT / {v2 ? 'V2 · M1' : 'V1'}</span><span>{config?.simulated ? 'OFFLINE FIXTURES' : `${config?.videoModel || '…'} · ${config?.resolution || '…'}`}</span></footer>
       </div>

@@ -9,8 +9,10 @@ import type { CharacterService } from '../characters/service.js';
 import { registerCharacters } from './characters.js';
 import { ProductionService } from '../production/service.js';
 import { registerProduction } from './production.js';
+import { registerM2 } from './m2.js';
+import type { M2Service } from '../production/m2.js';
 
-interface Options { repo: Repository; workflow: Workflow; characters?: CharacterService; dataRoot: string; staticRoot?: string; publicConfig: Record<string, unknown>; }
+interface Options { repo: Repository; workflow: Workflow; characters?: CharacterService; m2?: M2Service; dataRoot: string; staticRoot?: string; publicConfig: Record<string, unknown>; }
 const revision = z.object({ revision: z.number().int().nonnegative() });
 export async function createApp(o: Options) {
   const app = Fastify({ logger: false, bodyLimit: 256 * 1024 });
@@ -56,6 +58,7 @@ export async function createApp(o: Options) {
   });
   if (o.characters) await registerCharacters(app, o.characters);
   await registerProduction(app, new ProductionService(o.repo, o.dataRoot));
+  if (o.m2) await registerM2(app, o.m2);
   if (o.staticRoot) {
     app.get('/', async (_req, reply) => reply.type('text/html').sendFile('index.html', resolve(o.staticRoot!)));
     app.get('/assets/*', async (req, reply) => reply.sendFile(`assets/${(req.params as { '*': string })['*']}`, resolve(o.staticRoot!)));

@@ -118,3 +118,20 @@ test('never sends the API key to a redirected CDN', async () => {
   try { await media.video(board().shots[0], join(root, 'v.mp4'), { providerTaskId: 'existing', persistTaskId() {} }); expect(seen.find(x => x.url.includes('cdn.fal.media'))!.auth).toBeNull(); }
   finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test('reference-conditioned keyframes pin a capable endpoint and transmit ordered data URLs', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'story-refs-')); const requests: { url: string; init?: RequestInit }[] = [];
+  try {
+    await import('node:fs/promises').then(fs => fs.writeFile(join(root, 'ref.png'), Buffer.from('reference-pixels')));
+    const media = new OpenRouterMedia({ apiKey: 'fixture-only', fetcher: async (input, init) => {
+      const url = String(input); requests.push({ url, init });
+      if (url.endsWith('/endpoints')) return Response.json({ endpoints: [{ provider_tag: 'alibaba', supported_parameters: { resolution: { type: 'enum', values: ['1K', '2K'] }, aspect_ratio: { type: 'enum', values: ['16:9'] }, n: { type: 'range', min: 1, max: 6 }, input_references: { type: 'range', min: 0, max: 4 } } }] });
+      return Response.json({ data: [{ b64_json: 'iVBORw0KGgo=', media_type: 'image/png' }] });
+    } });
+    await expect(media.validateKeyframe(5)).rejects.toThrow(/参考|支持/); expect(requests.every(r => r.init?.method !== 'POST')).toBe(true);
+    await media.keyframe({ prompt: '参考图 1 为爷爷', references: [{ assetId: 'a', path: join(root, 'ref.png'), mime: 'image/png', sha256: 'fixture' }] }, join(root, 'frame.png'));
+    const post = JSON.parse(String(requests.find(r => r.init?.method === 'POST')?.init?.body));
+    expect(post).toMatchObject({ model: DEFAULT_IMAGE_MODEL, resolution: '1K', aspect_ratio: '16:9', provider: { only: ['alibaba'], allow_fallbacks: false } });
+    expect(post.input_references).toEqual([{ type: 'image_url', image_url: { url: `data:image/png;base64,${Buffer.from('reference-pixels').toString('base64')}` } }]);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { CharacterStore } from './characters.js';
 import { PortraitJobs } from './portrait-jobs.js';
 import { ProductionStore } from '../production/store.js';
+import { M2Store } from '../production/m2-store.js';
 import { AppError, validateStoryboard, type Project, type Job, type Artifact, type ProjectEvent } from '../domain/storyboard.js';
 
 const stamp = () => new Date().toISOString();
@@ -13,6 +14,7 @@ export class Repository {
   readonly characters: CharacterStore;
   readonly portraits: PortraitJobs;
   readonly production: ProductionStore;
+  readonly m2: M2Store;
   constructor(path: string) {
     const existed = path !== ':memory:' && existsSync(path);
     mkdirSync(dirname(path), { recursive: true }); this.db = new DatabaseSync(path);
@@ -32,6 +34,7 @@ export class Repository {
       CREATE TABLE IF NOT EXISTS character_libraries(project_id TEXT PRIMARY KEY, payload TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS character_images(id TEXT PRIMARY KEY, project_id TEXT NOT NULL, payload TEXT NOT NULL);`);
     this.production = new ProductionStore(this.db, id => this.getProject(id));
+    this.m2 = new M2Store(this.db);
     this.characters = new CharacterStore(this.db, id => this.getProject(id), this.production);
     this.portraits = new PortraitJobs(this.db);
     for (const p of this.listProjects()) {

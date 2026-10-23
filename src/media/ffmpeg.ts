@@ -31,6 +31,9 @@ export class MockMedia implements MediaBackend {
     await mkdir(dirname(output), { recursive: true });
     await runFfmpeg(['-f', 'lavfi', '-i', `color=c=0x${this.color(shot)}:s=640x360`, '-frames:v', '1', '-threads', '1', '-c:v', 'png', '-f', 'image2', output]);
   }
+  generationConfig(kind: string) { return { model: `offline-${kind}`, parameters: { width: 640, height: 360, fixture: true } }; }
+  async validateKeyframe(_references: number) { return { simulated: true }; }
+  async keyframe(input: { prompt: string }, output: string) { return this.image({ id: createHash('sha256').update(input.prompt).digest('hex'), imagePrompt: input.prompt } as Storyboard['shots'][number], output); }
   async video(shot: Storyboard['shots'][number], output: string) {
     await mkdir(dirname(output), { recursive: true });
     await runFfmpeg(['-f', 'lavfi', '-i', `color=c=0x${this.color(shot)}:s=640x360:r=24`, '-t', String(shot.duration), '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', output]);
