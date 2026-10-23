@@ -29,15 +29,15 @@ npm start
 | 用途 | 默认模型 / 配置 |
 |---|---|
 | 导演规划 / 后续图片理解 | DeepSeek 官方直连 `deepseek-flash`，使用 `DEEPSEEK_API_KEY` |
-| 镜头预览图 | `black-forest-labs/flux-3-image-klein`，768 档 |
-| 文生视频 | `minimax/hailuo-3-max`，480p，16:9，关闭音频生成 |
+| 镜头预览图 / 角色候选图 | `qwen/qwen-image-2.1-turbo`，1K 档（`IMAGE_RESOLUTION` 可配置） |
+| 文生视频 | `heygen/heygen-video-1`，480p，16:9，关闭音频生成 |
 | 最终拼接 | 本地 FFmpeg，统一输出 1280×720 / 24fps / 静音 MP4 |
 
 DeepSeek 能力更正（2026-10-22）：当前官方 `deepseek-flash` 对应 V4.1 Flash 1017，支持原生文本 + 图片输入。Pi 的模型能力声明包含 `image`。[官方 Vision 文档](https://api-docs.deepseek.com/guides/vision/)、[官方更新日志](https://api-docs.deepseek.com/updates/)。按用户在 2026-10-23 确认的分工，DeepSeek 能力优先直连：分镜规划已使用官方端点，后续图片理解也沿用此配置。OpenRouter 负责图像/视频生成。M1 已支持角色参考图上传及生成；自动图片理解、视频抽帧视觉检查与质量反馈尚未交付。
 
-价格与能力以 OpenRouter 实时目录为准。2026-10-22 的公开目录快照中，默认图像约 $0.008 / 张，视频 480p 约 $0.05 / 秒；20 个各 5 秒的镜头约 $5.16，**不含分镜模型、重试及其他输入费用**。这只是目录估算，不是账单承诺。界面提供实时目录估算按钮；无法取得报价时显示未知，不伪造价格。
+价格与能力以 OpenRouter 实时目录为准。2026-10-23 的公开目录快照中，Qwen Turbo 1K 图像约 $0.0184 / 张，HeyGen 文生视频 480p 约 $0.02 / 秒；20 个各 5 秒的镜头与 20 张预览图约 $2.368，**不含角色候选图、分镜模型、重试及其他输入费用**。参考图输入的视频采用不同计费项，M2 接入时另行估算。这只是目录估算，不是账单承诺。界面提供实时目录估算按钮；无法取得报价时显示未知，不伪造价格。
 
-参考：[视频目录](https://openrouter.ai/api/v1/videos/models)、[默认图像端点](https://openrouter.ai/api/v1/images/models/black-forest-labs/flux-3-image-klein/endpoints)、[本次价格快照](docs/model-pricing-snapshot.json)。生成前会校验视频模型支持的时长、分辨率与画幅，当前默认规划提示采用 H3 Max 的 5–15 秒 / 镜头。更换视频模型时还需调整 `main.ts` 的规划时长约束，不能保证仅替换 ID 即兼容。
+参考：[视频目录](https://openrouter.ai/api/v1/videos/models)、[默认图像端点](https://openrouter.ai/api/v1/images/models/qwen/qwen-image-2.1-turbo/endpoints)、[本次价格快照](docs/model-pricing-snapshot-2026-10-23.json)。生成前会校验视频模型支持的时长、分辨率与画幅，当前默认规划提示采用 HeyGen 支持的 5–15 秒 / 镜头。更换视频模型时还需核对 `main.ts` 的规划时长约束；更换图像模型时应同时核对 `IMAGE_RESOLUTION`，不能保证仅替换 ID 即兼容。
 
 `DIRECTOR_PROVIDER=deepseek` 显式选择官方直连，即使同时存在 OpenRouter key，也只用 DeepSeek key 调用规划。供应商、端点、模型 ID 必须匹配；冲突配置会在本地报错。没有显式供应商和端点时，优先使用已配置的 DeepSeek key。需要用 OpenRouter 规划时，同时设置 `DIRECTOR_PROVIDER=openrouter`、`DIRECTOR_MODEL=deepseek/deepseek-v4.1-flash-1017`、`DIRECTOR_BASE_URL=https://openrouter.ai/api/v1`。
 
@@ -62,6 +62,8 @@ npm run demo
 4. 图片或描述变化会建立新造型版本。点击「更新镜头引用到当前造型版本」并保存分镜；也可以在单镜头输入 `@`，选择角色及造型。引用标签可展开查看绑定版本和原图。
 5. 检查参考图与描述后「确认角色定稿」。外观、参考图或全局风格变化会使旧定稿失效；仅改名保留身份和引用。未保存修改不能直接定稿，另一窗口更新会显示冲突并保留本地文本。
 6. M1 到角色和引用交付为止。参考图驱动的分镜首帧、整组首帧确认和图生视频属于 M2；视觉检查与局部修复属于 M3。旧 V1 项目可显式启用 V2，原产物保留，旧执行确认撤销；切换后 M1 阶段不再生成视频。
+
+候选图失败会在对应造型旁显示原因。上游 HTTP 错误正文经脱敏后仅保存到本地数据目录的 `diagnostics/`，界面只显示固定错误说明与诊断编号；该目录不对前端开放、不纳入 Git。生成状态未知时仍阻止自动重提，避免重复付费。历史错误若未保存正文，无法靠这次更新补回具体原因。
 
 角色图片由用户审阅，不自动保证同一身份在不同年龄阶段仍完全一致。首次 AI 规划提供默认造型，年龄阶段可手工补充；没有自动资产合并或跨项目市场。生成模型调用全部走 API，图片校验与 FFmpeg 在本地运行。
 

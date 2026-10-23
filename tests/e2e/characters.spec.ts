@@ -1,6 +1,27 @@
 import { test, expect } from '@playwright/test';
 import sharp from 'sharp';
 
+test('a failed portrait request displays the reason beside the affected role without another POST', async ({ page }) => {
+  await page.goto('/'); await expect(page.getByText('离线联调模式：', { exact: false })).toBeVisible(); await page.getByLabel('启用角色参考（V2）').check();
+  await page.getByLabel('你的故事 / 创作要求').fill('候选图失败提示'); await page.getByRole('button', { name: '开始规划分镜' }).click();
+  let submissions = 0;
+  await page.route('**/looks/*/portrait', async route => { submissions++; await route.fulfill({ json: { status: 'failed', error: 'OpenRouter HTTP 400，诊断编号 fixture-error' } }); });
+  const look = page.getByTestId('character-fox').getByTestId('look-默认');
+  await look.locator('summary').filter({ hasText: 'AI 生成候选图' }).click(); await look.getByRole('button', { name: '查询生图费用' }).click(); await look.getByLabel('我确认本次生图费用').check();
+  await look.getByRole('button', { name: '生成角色候选图', exact: true }).click();
+  await expect(look.getByRole('alert')).toContainText('HTTP 400'); expect(submissions).toBe(1);
+  // Another tab finishes an explicit generation. Polling must replace the local
+  // failed response with the persisted success, without replaying this tab's POST.
+  const projects = await (await page.request.get('/api/projects')).json();
+  const id = projects.find((p: { story: string }) => p.story === '候选图失败提示').id;
+  const state = await (await page.request.get(`/api/projects/${id}`)).json();
+  const character = state.characterLibrary.characters.find((c: { id: string }) => c.id === 'fox');
+  const generated = await page.request.post(`/api/projects/${id}/characters/fox/looks/${character.looks[0].id}/portrait`, { data: { revision: state.characterLibrary.revision, requestId: crypto.randomUUID(), acceptCost: true } });
+  expect(generated.ok()).toBeTruthy(); expect((await generated.json()).status).toBe('succeeded');
+  await expect(look.getByAltText('小狐狸 默认 主参考图')).toBeVisible();
+  await expect(look.getByRole('alert')).toHaveCount(0); expect(submissions).toBe(1);
+});
+
 test('V2 role upload, manifest approval, stable @ binding, rename and invalidation survive reload', async ({ page }) => {
   const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
   await page.goto('/'); await expect(page.getByText('离线联调模式：', { exact: false })).toBeVisible(); await page.getByLabel('启用角色参考（V2）').check();

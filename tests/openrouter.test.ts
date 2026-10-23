@@ -1,11 +1,53 @@
 import { test, expect } from 'vitest';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { OpenRouterMedia, DEFAULT_VIDEO_MODEL } from '../src/media/openrouter.js';
+import { OpenRouterMedia, DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL } from '../src/media/openrouter.js';
 import { board } from './fixtures.js';
 
+test('failed image response preserves redacted diagnostics without exposing upstream payload or resubmitting', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'story-image-error-')); let calls = 0;
+  try {
+    const media = new OpenRouterMedia({ apiKey: 'sk-or-fixture-private', diagnosticRoot: root, fetcher: async () => {
+      calls++; return Response.json({ error: { code: 400, message: 'Provider rejected field resolution', metadata: { raw: 'Authorization: Bearer sk-or-fixture-private', api_key: 'sk-or-fixture-private' } } }, { status: 400 });
+    } });
+    let failure: Error | undefined; try { await media.portrait('角色参考图', join(root, 'out.image')); } catch (error) { failure = error as Error; }
+    expect(calls).toBe(1); expect(failure?.message).toContain('HTTP 400'); expect(failure?.message).toContain('诊断编号');
+    expect(failure?.message).not.toContain('Provider rejected'); expect(failure?.message).not.toContain('sk-or-fixture-private');
+    const files = await readdir(root); const diagnostic = files.find(file => file.endsWith('.json')); expect(diagnostic).toBeDefined();
+    const log = await readFile(join(root, diagnostic!), 'utf8'); expect(log).toContain('Provider rejected field resolution'); expect(log).not.toContain('sk-or-fixture-private');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 const catalog = { data: [{ id: DEFAULT_VIDEO_MODEL, supported_durations: [5, 6, 10, 15], supported_resolutions: ['480p', '768p'], supported_aspect_ratios: ['16:9'], pricing_skus: { duration_seconds_480p: '0.05' } }] };
+
+test('user-selected Qwen Turbo and HeyGen defaults use compatible resolution and image pricing', async () => {
+  expect(DEFAULT_IMAGE_MODEL).toBe('qwen/qwen-image-2.1-turbo');
+  expect(DEFAULT_VIDEO_MODEL).toBe('heygen/heygen-video-1');
+  const root = await mkdtemp(join(tmpdir(), 'story-qwen-')); const requests: { url: string; init?: RequestInit }[] = [];
+  try {
+    const media = new OpenRouterMedia({ apiKey: 'fixture-only', fetcher: async (input, init) => {
+      const url = String(input); requests.push({ url, init });
+      if (url.endsWith('/endpoints')) return Response.json({ endpoints: [{ pricing: [
+        { billable: 'output_image', unit: 'image', variant: '1k', cost_usd: 0.0184 },
+        { billable: 'output_image', unit: 'image', variant: '2k', cost_usd: 0.0184 },
+      ] }] });
+      if (url.endsWith('/videos/models')) return Response.json({ data: [{ ...catalog.data[0], pricing_skus: { duration_seconds_480p: '0.02' } }] });
+      return Response.json({ data: [{ b64_json: 'iVBORw0KGgo=', media_type: 'image/png' }] });
+    } });
+    expect(media.portraitConfig()).toMatchObject({ model: DEFAULT_IMAGE_MODEL, parameters: { resolution: '1K', aspect_ratio: '1:1' } });
+    expect((await media.estimatePortrait()).imageUsd).toBeCloseTo(0.0184);
+    const b = board(); b.shots.forEach(s => s.duration = 5);
+    expect(await media.estimate(b)).toMatchObject({ videoUsd: 0.2, imageUsd: 0.0368 });
+    await media.portrait('单人角色图', join(root, 'portrait.png'));
+    await media.image(b.shots[0], join(root, 'shot.png'));
+    const bodies = requests.filter(r => r.init?.method === 'POST').map(r => JSON.parse(String(r.init?.body)));
+    expect(bodies).toEqual([
+      { model: DEFAULT_IMAGE_MODEL, prompt: '单人角色图', resolution: '1K', aspect_ratio: '1:1', n: 1 },
+      { model: DEFAULT_IMAGE_MODEL, prompt: b.shots[0].imagePrompt, resolution: '1K', aspect_ratio: '16:9', n: 1 },
+    ]);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
 function stub() {
   const requests: { url: string; init?: RequestInit }[] = [];
   const f: typeof fetch = async (input, init) => {

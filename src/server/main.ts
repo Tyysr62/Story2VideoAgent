@@ -23,7 +23,7 @@ if (demo) {
   let demoStream = scriptedStream(board(Number(process.env.STORY_AGENT_DEMO_SHOTS || 3)));
   const original = planner.plan.bind(planner); planner.plan = (...args) => { demoStream = scriptedStream(board(Number(process.env.STORY_AGENT_DEMO_SHOTS || 3))); return original(...args); };
 }
-const media = demo ? new MockMedia() : new OpenRouterMedia({ apiKey: orKey, videoModel: process.env.VIDEO_MODEL, imageModel: process.env.IMAGE_MODEL, resolution: process.env.VIDEO_RESOLUTION || '480p' });
+const media = demo ? new MockMedia() : new OpenRouterMedia({ apiKey: orKey, videoModel: process.env.VIDEO_MODEL, imageModel: process.env.IMAGE_MODEL, resolution: process.env.VIDEO_RESOLUTION || '480p', imageResolution: process.env.IMAGE_RESOLUTION, diagnosticRoot: join(root, 'diagnostics') });
 const workflow = new Workflow(repo, planner, media, new FfmpegComposer(), root);
 const characters = new CharacterService(repo, root, demo ? { simulated: true, portrait: (prompt, output) => media.image({ id: 'portrait-fixture', title: '测试角色图', description: prompt, camera: '正面', imagePrompt: prompt, videoPrompt: prompt, duration: 1, characterIds: [] }, output) } : media as OpenRouterMedia);
 const app = await createApp({ repo, workflow, characters, dataRoot: root, staticRoot: resolve('dist'), publicConfig: {
