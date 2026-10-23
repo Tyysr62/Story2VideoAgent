@@ -58,6 +58,7 @@ export class OpenRouterMedia implements MediaBackend {
     return this.generateImage(shot.imagePrompt, output, '16:9');
   }
   async portrait(prompt: string, output: string) { return this.generateImage(prompt, output, '1:1'); }
+  portraitConfig() { return { model: this.imageModel, parameters: { resolution: this.options.imageResolution || '768', aspect_ratio: '1:1', n: 1 } }; }
   async estimatePortrait() {
     const endpoint = await this.json(`/images/models/${this.imageModel}/endpoints`);
     const prices = (endpoint.endpoints ?? []).flatMap((e: any) => e.pricing ?? []).filter((p: any) => p.billable === 'output_image' && p.unit === 'image' && (!p.variant || p.variant === (this.options.imageResolution || '768').toLowerCase())).map((p: any) => Number(p.cost_usd)).filter(Number.isFinite);

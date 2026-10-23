@@ -53,6 +53,7 @@ export class Repository {
       if (p.workflowVersion === 2) {
         if (fromPlanner) storyboard = this.characters.adoptPlan(id, storyboard);
         this.characters.validateStoryboard(id, storyboard);
+        storyboard = { ...storyboard, characters: this.characters.snapshot(id).characters.map(c => ({ id: c.id, name: c.name, description: c.description })), shots: storyboard.shots.map(s => ({ ...s, characterIds: [...new Set((s.characterRefs ?? []).map(r => r.characterId))] })) };
         if (p.storyboard?.style !== storyboard.style) this.characters.invalidateApproval(id);
       }
       Object.assign(p, { storyboard, revision: p.revision + 1, approvedRevision: null, finalArtifactId: null, error: null, status: 'awaiting_approval' });

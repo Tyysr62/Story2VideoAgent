@@ -1,0 +1,74 @@
+import { test, expect } from '@playwright/test';
+import sharp from 'sharp';
+
+test('V2 role upload, manifest approval, stable @ binding, rename and invalidation survive reload', async ({ page }) => {
+  const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
+  await page.goto('/'); await expect(page.getByText('离线联调模式：', { exact: false })).toBeVisible(); await page.getByLabel('启用角色参考（V2）').check();
+  await page.getByLabel('你的故事 / 创作要求').fill('一只狐狸找到旧信，回忆与朋友重逢。');
+  await page.getByRole('button', { name: '开始规划分镜' }).click();
+  await expect(page.getByRole('heading', { name: '角色库', exact: true })).toBeVisible();
+  const card = page.getByTestId('character-fox');
+  const image = await sharp({ create: { width: 64, height: 64, channels: 3, background: '#6789ab' } }).png().toBuffer();
+  await card.getByLabel('小狐狸 默认 上传参考图', { exact: true }).setInputFiles({ name: 'fox.png', mimeType: 'image/png', buffer: image });
+  await expect(card.getByAltText('小狐狸 默认 主参考图')).toBeVisible();
+  await page.getByRole('button', { name: '更新镜头引用到当前造型版本', exact: true }).click();
+  await page.getByRole('button', { name: '保存分镜', exact: true }).click();
+  await page.getByRole('button', { name: '确认角色定稿', exact: true }).click();
+  await expect(page.getByText('角色已定稿', { exact: true })).toBeVisible();
+  await page.getByLabel('镜头 1 角色引用', { exact: true }).fill('@小');
+  await page.getByRole('button', { name: '@小狐狸·默认', exact: true }).click();
+  await page.getByRole('button', { name: '保存分镜', exact: true }).click();
+  await card.getByLabel('角色名称', { exact: true }).fill('狐狸邮差');
+  await card.getByRole('button', { name: '保存角色', exact: true }).click();
+  await expect(page.getByText('角色已定稿', { exact: true })).toBeVisible();
+  await expect(card.getByLabel('角色别名', { exact: true })).toHaveValue('小狐狸');
+  await expect(page.getByText('@狐狸邮差·默认', { exact: true }).first()).toBeVisible();
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.screenshot({ path: 'docs/screenshots/v2-character-library.png' });
+  await card.getByLabel('造型描述', { exact: true }).fill('橙色皮毛，绿色围巾，圆眼睛，体型和脸型保持不变');
+  await card.getByRole('button', { name: '保存造型', exact: true }).click();
+  await expect(page.getByText('角色待定稿', { exact: true })).toBeVisible();
+  await expect(page.getByText('V2 视频生成将在 M2 开放', { exact: false })).toBeVisible();
+  await page.reload(); await page.getByRole('button', { name: /月光邮局/ }).first().click();
+  await expect(page.getByTestId('character-fox').getByLabel('角色名称', { exact: true })).toHaveValue('狐狸邮差');
+  expect(errors).toEqual([]);
+});
+
+test('V2 generated portrait is explicitly a fixture in demo and supports adding an age look', async ({ page }) => {
+  await page.goto('/'); await expect(page.getByText('离线联调模式：', { exact: false })).toBeVisible(); await page.getByLabel('启用角色参考（V2）').check();
+  await page.getByLabel('你的故事 / 创作要求').fill('狐狸的青年与老年'); await page.getByRole('button', { name: '开始规划分镜' }).click();
+  const card = page.getByTestId('character-fox');
+  await card.locator('summary').filter({ hasText: '添加造型' }).click();
+  await card.getByLabel('新造型名称').fill('老年'); await card.getByLabel('新造型描述').fill('灰白皮毛，蓝围巾，眼角皱纹');
+  await card.getByRole('button', { name: '添加造型', exact: true }).click();
+  const look = card.getByTestId('look-老年'); await look.locator('summary').filter({ hasText: 'AI 生成候选图' }).click(); await look.getByRole('button', { name: '查询生图费用', exact: true }).click();
+  await look.getByLabel('我确认本次生图费用').check(); await look.getByRole('button', { name: '生成角色候选图', exact: true }).click();
+  await expect(look.getByAltText('小狐狸 老年 主参考图')).toBeVisible();
+  await expect(look.getByText('测试候选图 · 非真实 AI', { exact: true })).toBeVisible();
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+  await page.screenshot({ path: 'test-results/v2-characters-mobile.png', fullPage: true });
+});
+
+test('polling a newer look version preserves an unsaved local edit until explicit reload', async ({ page, request }) => {
+  const story = `并发编辑-${Date.now()}`;
+  await page.goto('/'); await expect(page.getByText('离线联调模式：', { exact: false })).toBeVisible();
+  await page.getByLabel('启用角色参考（V2）').check(); await page.getByLabel('你的故事 / 创作要求').fill(story); await page.getByRole('button', { name: '开始规划分镜' }).click();
+  const card = page.getByTestId('character-fox'); await card.getByLabel('造型描述', { exact: true }).fill('未保存的绿色围巾');
+  const projects = await (await request.get('/api/projects')).json(); const project = projects.find((p: any) => p.story === story);
+  const detail = await (await request.get(`/api/projects/${project.id}`)).json(); const lib = detail.characterLibrary; const look = lib.characters[0].looks[0];
+  await request.patch(`/api/projects/${project.id}/characters/fox/looks/${look.id}`, { data: { revision: lib.revision, description: '另一窗口保存的红围巾' } });
+  await expect(card.getByText('造型已在其他窗口更新', { exact: false })).toBeVisible();
+  await expect(card.getByLabel('造型描述', { exact: true })).toHaveValue('未保存的绿色围巾');
+  await card.getByRole('button', { name: '载入当前造型版本' }).click(); await expect(card.getByLabel('造型描述', { exact: true })).toHaveValue('另一窗口保存的红围巾');
+});
+
+test('an in-flight role write disables switching projects until its response is applied', async ({ page }) => {
+  await page.goto('/'); await expect(page.getByText('离线联调模式：', { exact: false })).toBeVisible(); await page.getByLabel('启用角色参考（V2）').check();
+  await page.getByLabel('你的故事 / 创作要求').fill('保存时禁止切换'); await page.getByRole('button', { name: '开始规划分镜' }).click();
+  let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; });
+  await page.route('**/api/projects/*/characters/fox', async route => { await gate; await route.continue(); });
+  const card = page.getByTestId('character-fox'); await card.getByLabel('角色名称', { exact: true }).fill('测试邮差'); await card.getByRole('button', { name: '保存角色', exact: true }).click();
+  try { await expect(page.getByRole('button', { name: '＋ 新建故事', exact: true })).toBeDisabled(); } finally { release(); }
+  await expect(page.getByRole('button', { name: '＋ 新建故事', exact: true })).toBeEnabled();
+});

@@ -51,6 +51,8 @@ test('explicit portrait generation persists success and deduplicates a repeated 
   const request = { revision: lib.revision, characterId: c.id, lookId: look.id, requestId: 'request-one', acceptCost: true as const };
   const job = await service.generate(p.id, request);
   expect(job.status).toBe('succeeded'); expect(prompt).toContain('黑发'); expect(prompt).toContain('退休教师');
+  expect(job.inputSnapshot).toMatchObject({ model: 'injected-adapter', identityDescription: '退休教师', lookDescription: '黑发，蓝色外套' });
+  expect(repo.characters.getImageAsset(p.id, job.assetId!).generation?.prompt).toBe(prompt);
   expect((await service.generate(p.id, request)).id).toBe(job.id); expect(calls).toBe(1);
   expect(repo.characters.snapshot(p.id).approval).toBeNull();
 });

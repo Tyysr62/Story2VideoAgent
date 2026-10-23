@@ -2,8 +2,13 @@ import { z } from 'zod';
 import { AppError } from './storyboard.js';
 
 export interface CharacterRef { characterId: string; lookId: string; lookVersionId: string; }
-export interface LookVersion { readonly id: string; readonly description: string; readonly imageAssetId: string | null; readonly createdAt: string; }
-export interface Look { id: string; name: string; default?: boolean; selectedVersionId: string; versions: LookVersion[]; }
+export interface GenerationSnapshot { model: string; parameters: Record<string, string | number | boolean>; prompt: string; identityDescription: string; lookDescription: string; style: string; }
+export interface LookVersion {
+  readonly id: string; readonly description: string; readonly imageAssetId: string | null; readonly createdAt: string;
+  readonly identityDescription?: string; readonly identityHash?: string; readonly style?: string;
+  readonly source?: 'draft' | 'upload' | 'generated'; readonly contentHash?: string; readonly generation?: GenerationSnapshot;
+}
+export interface Look { id: string; name: string; aliases?: string[]; default?: boolean; selectedVersionId: string; versions: LookVersion[]; }
 export interface Character { id: string; name: string; aliases: string[]; description: string; looks: Look[]; }
 export interface CharacterApproval { manifestHash: string; approvedAt: string; }
 export interface CharacterLibrary { revision: number; characters: Character[]; approval: CharacterApproval | null; }
@@ -12,6 +17,7 @@ export interface ImageAsset {
   readonly mime: 'image/png' | 'image/jpeg' | 'image/webp'; readonly bytes: number;
   readonly width: number; readonly height: number; readonly sha256: string;
   readonly source: 'upload' | 'generated'; readonly simulated: boolean; readonly createdAt: string;
+  readonly generation?: GenerationSnapshot;
 }
 
 // Names exclude mention delimiters so every accepted label can be entered as @name·look.
@@ -35,7 +41,7 @@ export function validateLibraryLabels(characters: Character[]) {
       if (names.has(key)) throw new AppError(400, '角色名称或别名重复');
       names.add(key);
     }
-    const looks = character.looks.map(l => normalizeLabel(l.name));
+    const looks = character.looks.flatMap(l => [l.name, ...(l.aliases ?? [])].map(normalizeLabel));
     if (new Set(looks).size !== looks.length) throw new AppError(400, '造型名称重复');
     if (character.looks.filter(l => l.default).length > 1) throw new AppError(400, '只能选择一个默认造型');
   }
@@ -44,19 +50,21 @@ export interface CharacterMention { label: string; name: string; lookName?: stri
 export function parseCharacterMentions(text: string): CharacterMention[] {
   const mentions: CharacterMention[] = [];
   // A letter/number immediately before @ belongs to ordinary text such as an email address.
-  const regex = /(?<![\p{L}\p{N}_.%+@-])@([^\s@·，。！？、,!?;；:：()（）]+)(?:·([^\s@·，。！？、,!?;；:：()（）]+))?/gu;
+  const regex = /(?<![a-zA-Z0-9_.%+@-])@([^\s@·，。！？、,!?;；:：()（）]+)(?:·([^\s@·，。！？、,!?;；:：()（）]+))?/gu;
   for (const match of text.matchAll(regex)) mentions.push({ label: match[0], name: match[1], lookName: match[2], start: match.index, end: match.index + match[0].length });
   return mentions;
 }
-export function resolveCharacterReferences(text: string, library: CharacterLibrary): CharacterRef[] {
+export function resolveCharacterReferences(text: string, library: CharacterLibrary, bound?: CharacterRef[]): CharacterRef[] {
   const refs: CharacterRef[] = [];
   for (const mention of parseCharacterMentions(text)) {
     const candidates = library.characters.filter(c => [c.name, ...c.aliases].some(n => normalizeLabel(n) === normalizeLabel(mention.name)));
     if (candidates.length !== 1) throw new AppError(400, `未知或有歧义的角色引用：${mention.label}`);
     const character = candidates[0];
+    const boundLooks = new Set((bound ?? []).filter(r => r.characterId === character.id).map(r => r.lookId));
+    if (!mention.lookName && boundLooks.size > 1) throw new AppError(400, `同一角色有多个出镜造型，请明确指定：${mention.label}`);
     const looks = mention.lookName
-      ? character.looks.filter(l => normalizeLabel(l.name) === normalizeLabel(mention.lookName!))
-      : character.looks.length === 1 ? character.looks : character.looks.filter(l => l.default);
+      ? character.looks.filter(l => [l.name, ...(l.aliases ?? [])].some(n => normalizeLabel(n) === normalizeLabel(mention.lookName!)))
+      : boundLooks.size === 1 ? character.looks.filter(l => boundLooks.has(l.id)) : character.looks.length === 1 ? character.looks : character.looks.filter(l => l.default);
     if (looks.length !== 1) throw new AppError(400, `请选择明确的角色造型：${mention.label}`);
     const look = looks[0];
     const ref = { characterId: character.id, lookId: look.id, lookVersionId: look.selectedVersionId };

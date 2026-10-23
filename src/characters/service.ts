@@ -3,12 +3,12 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, relative, resolve, isAbsolute } from 'node:path';
 import { z } from 'zod';
 import { AppError } from '../domain/storyboard.js';
-import type { CharacterLibrary } from '../domain/characters.js';
+import type { CharacterLibrary, GenerationSnapshot } from '../domain/characters.js';
 import type { Repository } from '../storage/repository.js';
 import { UncertainSubmission } from '../media/openrouter.js';
 import { validatePortrait } from './images.js';
 
-export interface PortraitBackend { readonly simulated: boolean; portrait(prompt: string, output: string): Promise<void>; estimatePortrait?(): Promise<unknown>; }
+export interface PortraitBackend { readonly simulated: boolean; readonly imageModel?: string; portraitConfig?(): { model: string; parameters: Record<string, string | number | boolean> }; portrait(prompt: string, output: string): Promise<void>; estimatePortrait?(): Promise<unknown>; }
 export const portraitRequestSchema = z.object({ revision: z.number().int().nonnegative(), characterId: z.string().min(1).max(100), lookId: z.string().min(1).max(100), requestId: z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/), acceptCost: z.boolean() }).strict();
 export class CharacterService {
   readonly jobs;
@@ -34,11 +34,11 @@ export class CharacterService {
     const asset = await this.storeImage(projectId, bytes, info, 'upload');
     return this.repo.characters.updateLook(projectId, revision, characterId, lookId, { imageAssetId: asset.id });
   }
-  private async storeImage(projectId: string, bytes: Buffer, info: Awaited<ReturnType<typeof validatePortrait>>, source: 'upload' | 'generated') {
+  private async storeImage(projectId: string, bytes: Buffer, info: Awaited<ReturnType<typeof validatePortrait>>, source: 'upload' | 'generated', generation?: GenerationSnapshot) {
     const id = randomUUID(); const ext = info.mime === 'image/jpeg' ? 'jpg' : info.mime.split('/')[1];
     const path = join('characters', projectId, `${id}.${ext}`); await mkdir(join(this.root, 'characters', projectId), { recursive: true });
     await writeFile(join(this.root, path), bytes, { flag: 'wx' });
-    return this.repo.characters.saveImageAsset({ id, projectId, path, ...info, bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex'), source, simulated: source === 'generated' && this.backend.simulated });
+    return this.repo.characters.saveImageAsset({ id, projectId, path, ...info, bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex'), source, simulated: source === 'generated' && this.backend.simulated, ...(generation ? { generation } : {}) });
   }
   image(projectId: string, assetId: string) {
     const asset = this.repo.characters.getImageAsset(projectId, assetId); const path = resolve(this.root, asset.path); const rel = relative(resolve(this.root), path);
@@ -59,8 +59,10 @@ export class CharacterService {
     const style = this.repo.getProject(projectId).storyboard?.style ?? '清晰角色设定图';
     const prompt = `角色主参考图，单一人物，正面或四分之三视角，面部清晰，主体完整，简单纯色背景，不含文字、水印或分格。\n全局画风：${style}\n角色身份：${character.description}\n造型：${version.description}`;
     const now = new Date().toISOString();
+    const config = this.backend.portraitConfig?.() ?? { model: this.backend.imageModel ?? (this.backend.simulated ? 'offline-fixture' : 'injected-adapter'), parameters: {} };
+    const inputSnapshot: GenerationSnapshot = { ...config, prompt, identityDescription: character.description, lookDescription: version.description, style };
     const job = this.jobs.create({ id: input.requestId, projectId, characterId: character.id, lookId: look.id, lookVersionId: version.id, libraryRevision: input.revision,
-      inputHash: createHash('sha256').update(JSON.stringify({ prompt, lookVersionId: version.id })).digest('hex'), status: 'running', assetId: null, error: null, createdAt: now, updatedAt: now });
+      inputHash: createHash('sha256').update(JSON.stringify({ ...inputSnapshot, lookVersionId: version.id })).digest('hex'), inputSnapshot, status: 'running', assetId: null, error: null, createdAt: now, updatedAt: now });
     this.repo.event(projectId, 'portrait.started', { jobId: job.id, lookId: look.id, simulated: this.backend.simulated });
     const task = (async () => {
       let produced = false;
@@ -68,7 +70,7 @@ export class CharacterService {
         const directory = join(this.root, 'characters', projectId, 'pending'); await mkdir(directory, { recursive: true });
         const output = join(directory, `${job.id}.image`); await this.backend.portrait(prompt, output); produced = true;
         const bytes = await readFile(output); const mime = bytes[0] === 255 ? 'image/jpeg' : bytes.toString('ascii', 0, 4) === 'RIFF' ? 'image/webp' : 'image/png';
-        const info = await validatePortrait(bytes, mime); const asset = await this.storeImage(projectId, bytes, info, 'generated');
+        const info = await validatePortrait(bytes, mime); const asset = await this.storeImage(projectId, bytes, info, 'generated', inputSnapshot);
         this.repo.characters.updateLook(projectId, input.revision, character.id, look.id, { imageAssetId: asset.id });
         this.repo.event(projectId, 'portrait.succeeded', { jobId: job.id, assetId: asset.id });
         return this.jobs.update(projectId, job.id, { status: 'succeeded', assetId: asset.id, error: null });

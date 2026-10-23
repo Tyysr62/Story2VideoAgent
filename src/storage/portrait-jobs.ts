@@ -1,10 +1,12 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { AppError } from '../domain/storyboard.js';
+import type { GenerationSnapshot } from '../domain/characters.js';
 
 export interface PortraitJob {
   id: string; projectId: string; characterId: string; lookId: string; lookVersionId: string; libraryRevision: number;
   inputHash: string; status: 'running' | 'succeeded' | 'failed' | 'unknown'; assetId: string | null;
   error: string | null; createdAt: string; updatedAt: string;
+  inputSnapshot?: GenerationSnapshot;
 }
 export class PortraitJobs {
   constructor(private db: DatabaseSync) {

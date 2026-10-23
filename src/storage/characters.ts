@@ -6,7 +6,7 @@ import {
   characterInputSchema, characterPatchSchema, lookInputSchema, lookPatchSchema,
   normalizeLabel, referenceKey, resolveCharacterReferences, validateCharacterRef, validateLibraryLabels,
   type Character, type CharacterInput, type CharacterLibrary, type CharacterPatch,
-  type ImageAsset, type Look, type LookInput, type LookPatch,
+  type ImageAsset, type Look, type LookInput, type LookPatch, type LookVersion,
 } from '../domain/characters.js';
 
 const stamp = () => new Date().toISOString();
@@ -15,6 +15,7 @@ const imageSchema = z.object({
   mime: z.enum(['image/png', 'image/jpeg', 'image/webp']), bytes: z.number().int().positive().max(10 * 1024 * 1024),
   width: z.number().int().positive().max(4096), height: z.number().int().positive().max(4096),
   sha256: z.string().regex(/^[a-f0-9]{64}$/i), source: z.enum(['upload', 'generated']), simulated: z.boolean(), createdAt: z.string().min(1),
+  generation: z.object({ model: z.string().max(300), parameters: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])), prompt: z.string().max(12000), identityDescription: z.string().max(2000), lookDescription: z.string().max(2000), style: z.string().max(2000) }).optional(),
 }).strict();
 
 /** Uses Repository's connection. Public mutations are synchronous and transactionally CAS-protected. */
@@ -80,7 +81,10 @@ export class CharacterStore {
     return this.mutate(projectId, revision, library => {
       const character = this.character(library, characterId);
       const previousName = character.name;
+      const historicalAliases = character.aliases;
       Object.assign(character, data);
+      // Existing aliases can occur in saved text. Keep them as historical names instead of breaking bindings.
+      character.aliases = [...new Map([...historicalAliases, ...character.aliases].map(a => [normalizeLabel(a), a])).values()];
       // Historical labels remain visible aliases, preserving already bound @ text through rename.
       if (data.name && normalizeLabel(previousName) !== normalizeLabel(data.name)) {
         character.aliases = character.aliases.filter(a => normalizeLabel(a) !== normalizeLabel(data.name!));
@@ -100,7 +104,7 @@ export class CharacterStore {
       const character = this.character(library, characterId);
       if (data.imageAssetId) this.getImageAsset(projectId, data.imageAssetId);
       if (data.default) character.looks.forEach(l => { l.default = false; });
-      const version = { id: randomUUID(), description: data.description, imageAssetId: data.imageAssetId ?? null, createdAt: stamp() };
+      const version = this.newVersion(projectId, character, data.description, data.imageAssetId ?? null);
       character.looks.push({ id: randomUUID(), name: data.name, ...(data.default === undefined ? {} : { default: data.default }), selectedVersionId: version.id, versions: [version] });
     });
   }
@@ -108,7 +112,9 @@ export class CharacterStore {
     const data = lookPatchSchema.parse(patch);
     return this.mutate(projectId, revision, library => {
       const look = this.look(library, characterId, lookId);
-      if (data.name) look.name = data.name;
+      if (data.name && normalizeLabel(data.name) !== normalizeLabel(look.name)) {
+        look.aliases = [...new Set([...(look.aliases ?? []), look.name])].filter(n => normalizeLabel(n) !== normalizeLabel(data.name!)); look.name = data.name;
+      }
       if (data.default !== undefined) {
         if (data.default) this.character(library, characterId).looks.forEach(l => { l.default = false; });
         look.default = data.default;
@@ -117,10 +123,17 @@ export class CharacterStore {
       if (data.description !== undefined || data.imageAssetId !== undefined) {
         const imageAssetId = data.imageAssetId === undefined ? current.imageAssetId : data.imageAssetId;
         if (imageAssetId) this.getImageAsset(projectId, imageAssetId);
-        const version = { id: randomUUID(), description: data.description ?? current.description, imageAssetId, createdAt: stamp() };
+        const version = this.newVersion(projectId, this.character(library, characterId), data.description ?? current.description, imageAssetId);
         look.versions.push(version); look.selectedVersionId = version.id;
       }
     });
+  }
+  private newVersion(projectId: string, character: Pick<Character, 'description'>, description: string, imageAssetId: string | null, style = this.project(projectId).storyboard?.style ?? ''): LookVersion {
+    const image = imageAssetId ? this.getImageAsset(projectId, imageAssetId) : undefined;
+    const snapshot = { description, imageSha: image?.sha256 ?? null, identityDescription: character.description, style };
+    return { id: randomUUID(), description, imageAssetId, createdAt: stamp(), identityDescription: character.description,
+      identityHash: createHash('sha256').update(character.description).digest('hex'), style, source: image?.source ?? 'draft',
+      contentHash: createHash('sha256').update(JSON.stringify(snapshot)).digest('hex'), ...(image?.generation ? { generation: image.generation } : {}) };
   }
   selectVersion(projectId: string, revision: number, characterId: string, lookId: string, versionId: string): CharacterLibrary {
     return this.mutate(projectId, revision, library => {
@@ -149,7 +162,7 @@ export class CharacterStore {
     if (!library.characters.length && storyboard.characters.length) {
       library.characters = storyboard.characters.map(c => {
         const data = characterInputSchema.parse({ name: c.name, description: c.description });
-        const version = { id: randomUUID(), description: data.description, imageAssetId: null, createdAt: stamp() };
+        const version = this.newVersion(projectId, data, data.description, null, storyboard.style);
         return { ...data, id: c.id, looks: [{ id: randomUUID(), name: '默认', default: true, selectedVersionId: version.id, versions: [version] }] };
       });
       validateLibraryLabels(library.characters); library.revision++; library.approval = null; this.write(projectId, library);
@@ -171,9 +184,10 @@ export class CharacterStore {
     const library = this.snapshot(projectId);
     for (const shot of storyboard.shots) {
       const refs = shot.characterRefs ?? [];
+      if (shot.characterIds.some(id => !refs.some(ref => ref.characterId === id))) throw new AppError(409, '角色身份尚未绑定明确造型引用');
       if (new Set(refs.map(referenceKey)).size !== refs.length) throw new AppError(400, '角色引用重复');
       if (forApproval) {
-        const mentions = resolveCharacterReferences([shot.title, shot.description, shot.camera, shot.imagePrompt, shot.videoPrompt].join('\n'), library);
+        const mentions = resolveCharacterReferences([shot.title, shot.description, shot.camera, shot.imagePrompt, shot.videoPrompt].join('\n'), library, refs);
         if (mentions.some(r => !refs.some(bound => referenceKey(bound) === referenceKey(r)))) throw new AppError(409, '角色提及尚未绑定明确造型');
       }
       for (const ref of refs) {
@@ -203,7 +217,7 @@ export class CharacterStore {
     });
   }
   /** Called inside Repository's storyboard transaction; does not start a nested transaction. */
-  invalidateApproval(projectId: string) { const library = this.raw(projectId); if (library.approval) { library.approval = null; this.write(projectId, library); } }
+  invalidateApproval(projectId: string) { const library = this.raw(projectId); library.approval = null; library.revision++; this.write(projectId, library); }
   saveImageAsset(input: Omit<ImageAsset, 'id' | 'createdAt'> & { id?: string; createdAt?: string }): ImageAsset {
     this.editable(input.projectId);
     const asset = imageSchema.parse({ ...input, id: input.id ?? randomUUID(), createdAt: input.createdAt ?? stamp() });
