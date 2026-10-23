@@ -7,6 +7,8 @@ import type { Repository } from '../storage/repository.js';
 import type { Workflow } from '../workflow/workflow.js';
 import type { CharacterService } from '../characters/service.js';
 import { registerCharacters } from './characters.js';
+import { ProductionService } from '../production/service.js';
+import { registerProduction } from './production.js';
 
 interface Options { repo: Repository; workflow: Workflow; characters?: CharacterService; dataRoot: string; staticRoot?: string; publicConfig: Record<string, unknown>; }
 const revision = z.object({ revision: z.number().int().nonnegative() });
@@ -53,6 +55,7 @@ export async function createApp(o: Options) {
     return reply.type(artifact.mime).header('Cache-Control', 'private, max-age=3600').sendFile(rel, resolve(o.dataRoot));
   });
   if (o.characters) await registerCharacters(app, o.characters);
+  await registerProduction(app, new ProductionService(o.repo, o.dataRoot));
   if (o.staticRoot) {
     app.get('/', async (_req, reply) => reply.type('text/html').sendFile('index.html', resolve(o.staticRoot!)));
     app.get('/assets/*', async (req, reply) => reply.sendFile(`assets/${(req.params as { '*': string })['*']}`, resolve(o.staticRoot!)));
