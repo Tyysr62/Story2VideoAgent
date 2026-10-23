@@ -1,4 +1,4 @@
-# Story Agent
+# Story2VideoAgent
 
 把一个故事变成可编辑分镜，再通过云端 API 生成镜头，最后用 FFmpeg 拼成短片。基于 **Pi Coding Agent SDK** 的独立开源实现。
 
@@ -9,7 +9,8 @@ V1：故事 → Agent 自主分镜 → 人工编辑 / 版本确认 → API 生�
 ## 快速启动
 
 ```powershell
-cd C:\Users\33548\Documents\ChatGPT\项目魔改\story-agent
+git clone https://github.com/Tyysr62/Story2VideoAgent.git
+cd Story2VideoAgent
 npm install
 if (-not (Test-Path .env.local)) { Copy-Item .env.example .env.local }
 # 在本地编辑 .env.local，填入 DEEPSEEK_API_KEY 和 OPENROUTER_API_KEY
