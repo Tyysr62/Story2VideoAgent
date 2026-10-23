@@ -22,7 +22,7 @@
 - [x] 运行角色浏览器测试，通过后联调。
 
 ## 联调与交付
-- [ ] `npm run verify` 全部通过，使用 requesting-code-review 技能审查，修复实际问题。
+- [x] `npm run verify` 全部通过，使用 requesting-code-review 技能审查，修复实际问题。
 - [ ] 更新交付文档、操作说明；本地提交并合并到主工作区。
 - [ ] 仅修改被忽略 .env.local 中的 IMAGE_RESOLUTION=2K，确认没有运行任务后重启服务；核验原项目、资产和文件摘要保留。
 - [ ] 汇报结果并询问是否推送 GitHub；本轮不自动调用付费模型。
