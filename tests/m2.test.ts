@@ -38,6 +38,18 @@ test('an older unfinished cloud task blocks a new submission after prompt compil
   await expect(service.videos(id, { revision: 2, shotIds: ['shot-1'], requestId: 'changed-input', acceptCost: true, manifestHash: service.view(id).manifestHash })).rejects.toThrow(/旧版本云任务/);
 });
 
+test('a requested voice clip without an audio track is retained as failed and never automatically regenerated', async () => {
+  const { root, repo, service, id, backend } = await setup(); const b = repo.getProject(id).storyboard!;
+  b.shots[0].audio = { ...silentAudio(), mode: 'speech', narration: { text: '四十年后。', delivery: '' } }; repo.saveStoryboard(id, 2, b);
+  await service.frames(id, { revision: 3, shotIds: ['shot-1', 'shot-2'], requestId: 'no-audio-frames', acceptCost: true });
+  await service.approve(id, 3, service.view(id).manifestHash); let calls = 0;
+  const silent = new MockMedia(); const broken = new M2Service(repo, root, { ...backend, video: async (shot, path, task) => { calls++; task!.persistTaskId('completed-without-audio'); await silent.video({ ...shot, audio: undefined }, path); } }, new FfmpegComposer());
+  const result = await broken.videos(id, { revision: 3, shotIds: ['shot-1'], requestId: 'no-audio-video', acceptCost: true, manifestHash: broken.view(id).manifestHash });
+  expect(result.shots[0].videoCurrent).toBe(false); expect(result.shots[0].videoError).toContain('音轨'); expect(calls).toBe(1);
+  const request = repo.production.list(id).find(e => e.kind === 'video' && e.providerTaskId); expect(request?.status).toBe('failed'); expect(request?.providerTerminal).toBe(true);
+  expect(repo.production.list(id).some(e => e.kind === 'video' && e.file?.mime === 'video/mp4')).toBe(true);
+});
+
 const close: (() => Promise<void>)[] = []; afterEach(async () => { for (const f of close.splice(0)) await f(); });
 async function setup(fail = false) {
   const root = await mkdtemp(join(tmpdir(), 'story-m2-')); const repo = new Repository(join(root, 'app.db')); const mock = new MockMedia(); let calls = 0;

@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { AppError, type Project, type Job, type Storyboard, type Artifact } from '../domain/storyboard.js';
 import { Repository } from '../storage/repository.js';
 import type { Planner } from '../director/pi-director.js';
-import type { Composer, MediaBackend } from '../media/ffmpeg.js';
+import { inspectMedia, MissingAudioTrack, type Composer, type MediaBackend } from '../media/ffmpeg.js';
 import { UncertainSubmission, ProviderFailed } from '../media/openrouter.js';
 import { ProductionService } from '../production/service.js';
 import { compileVideoPrompt, VIDEO_PROMPT_VERSION } from '../media/video-prompt.js';
@@ -80,7 +80,7 @@ export class Workflow {
       videos.push(path);
     }
     const compose = this.repo.ensureJob({ projectId: id, revision, kind: 'compose', shotId: null });
-    await this.execute(compose, path => this.composer.compose(videos, path));
+    await this.execute(compose, path => this.composer.compose(videos, path, { mute: p.storyboard!.shots.map(s => !s.audio || s.audio.mode === 'silent') }));
     const current = this.repo.getProject(id); this.repo.assertRevision(current, revision);
     if (current.status !== 'generating' || current.approvedRevision !== revision) throw new AppError(409, '执行版本或确认状态已变化，停止发布成片');
     this.repo.updateProject(id, { status: 'ready', finalArtifactId: compose.id, error: null }); this.repo.event(id, 'project.ready', { revision, artifactId: compose.id });
@@ -104,6 +104,7 @@ export class Workflow {
     let produced = false;
     try {
       await fn(path, archived.id); produced = true; const info = await stat(path); if (!info.size) throw new Error('Empty media file');
+      if (job.kind === 'video' && shot?.audio && shot.audio.mode !== 'silent' && !(await inspectMedia(path)).hasAudio) throw new MissingAudioTrack();
       const bytes = await readFile(path); const imageMime = bytes[0] === 0xff ? 'image/jpeg' : bytes.subarray(0, 4).toString() === 'RIFF' ? 'image/webp' : 'image/png';
       const a: Artifact = { id: job.id, projectId: job.projectId, revision: job.revision, shotId: job.shotId, kind: job.kind, path: relative(this.root, path), mime: job.kind === 'image' ? imageMime : 'video/mp4', bytes: info.size,
         sha256: createHash('sha256').update(bytes).digest('hex'), simulated: this.media.simulated, createdAt: new Date().toISOString() };
@@ -113,7 +114,7 @@ export class Workflow {
       const failure = !this.media.simulated && job.kind === 'image' && produced ? new UncertainSubmission() : e;
       this.repo.production.update(job.projectId, archived.id, { status: failure instanceof UncertainSubmission ? 'unknown' : 'failed', error: failure instanceof AppError ? failure.message : '媒体任务失败' });
       await new ProductionService(this.repo, this.root).recoverOutputs(job.projectId);
-      this.repo.updateJob(job.id, { status: failure instanceof UncertainSubmission ? 'unknown' : 'failed', error: failure instanceof AppError ? failure.message : '媒体任务失败', ...(failure instanceof ProviderFailed ? { providerTaskId: undefined } : {}) }); throw failure;
+      this.repo.updateJob(job.id, { status: failure instanceof UncertainSubmission ? 'unknown' : 'failed', error: failure instanceof AppError ? failure.message : '媒体任务失败', ...(failure instanceof ProviderFailed || failure instanceof MissingAudioTrack ? { providerTaskId: undefined } : {}) }); throw failure;
     }
   }
 }

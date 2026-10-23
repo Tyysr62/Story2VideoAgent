@@ -5,7 +5,9 @@ import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { PiDirector } from '../src/director/pi-director.js';
 import { OpenRouterMedia, DEFAULT_VIDEO_MODEL } from '../src/media/openrouter.js';
-import { FfmpegComposer, MockMedia, runFfmpeg } from '../src/media/ffmpeg.js';
+import { FfmpegComposer, MockMedia, runFfmpeg, inspectMedia } from '../src/media/ffmpeg.js';
+import { silentAudio } from '../src/domain/audio.js';
+import type { Storyboard } from '../src/domain/storyboard.js';
 import { Repository } from '../src/storage/repository.js';
 import { Workflow } from '../src/workflow/workflow.js';
 import { createApp } from '../src/server/app.js';
@@ -13,9 +15,9 @@ import { board } from './fixtures.js';
 
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const f of cleanup.splice(0).reverse()) await f(); });
-async function fixture() {
+async function fixture(withAudio = false) {
   const root = await mkdtemp(join(tmpdir(), 'story-integration-')); cleanup.push(() => rm(root, { recursive: true, force: true }));
-  const b = board(2); const png = join(root, 'source.png'), clip = join(root, 'source.mp4');
+  const b: Storyboard = board(2); if (withAudio) b.shots[0].audio = { ...silentAudio(), mode: 'speech', narration: { text: '那封信，他保存了四十年。', delivery: '温柔' } }; const png = join(root, 'source.png'), clip = join(root, 'source.mp4');
   const mock = new MockMedia(); await mock.image(b.shots[0], png); await mock.video(b.shots[0], clip);
   const image = await readFile(png), video = await readFile(clip); const submits: string[] = [];
   const fetcher: typeof fetch = async (input, options) => {
@@ -32,7 +34,7 @@ async function fixture() {
 }
 
 test('real Pi HTTP transport → HTTP approval → cloud adapter fixtures → real FFmpeg → persisted playback', async () => {
-  const { root, b, submits, media } = await fixture(); const requests: any[] = [];
+  const { root, b, submits, media } = await fixture(true); const requests: any[] = [];
   const modelServer = createServer(async (req, res) => {
     let raw = ''; for await (const part of req) raw += part; const input = JSON.parse(raw); requests.push(input);
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
@@ -59,6 +61,11 @@ test('real Pi HTTP transport → HTTP approval → cloud adapter fixtures → re
   const final = repo.getArtifact(repo.getProject(id).finalArtifactId!);
   await runFfmpeg(['-i', join(root, final.path), '-f', 'null', '-']);
   expect(final.bytes).toBeGreaterThan(1000);
+  expect((await inspectMedia(join(root, final.path))).hasAudio).toBe(true);
+  const pcm = join(root, 'final-audio.pcm');
+  await runFfmpeg(['-ss', '0.2', '-i', join(root, final.path), '-t', '0.15', '-map', '0:a:0', '-f', 's16le', pcm]);
+  expect((await readFile(pcm)).some(byte => byte !== 0)).toBe(true);
+  expect(repo.production.list(id).find(e => e.kind === 'video')?.prompt).toContain('那封信，他保存了四十年。');
   const range = await app.inject({ url: `/api/artifacts/${final.id}`, headers: { range: 'bytes=0-99' } }); expect(range.statusCode).toBe(206); expect(range.rawPayload.length).toBe(100);
 });
 

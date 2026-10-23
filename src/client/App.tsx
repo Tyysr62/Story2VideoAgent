@@ -63,12 +63,12 @@ export function App() {
       <button className="new-project" disabled={Boolean(busy || roleBusy)} onClick={() => { selectedProject.current = null; setId(null); setDetail(undefined); setDraft(null); setDirty(false); setError(''); setEstimate(undefined); }}>＋ 新建故事</button>
       <p className="eyebrow">你的创作</p>
       <nav className="project-list" aria-label="故事列表">{projects.length ? projects.map(p => <button key={p.id} className={id === p.id ? 'selected' : ''} disabled={Boolean(busy || roleBusy)} onClick={() => void select(p.id)}><span>{p.storyboard?.title || p.story.slice(0, 22)}</span><small><i className={`dot ${p.status}`}/>{statuses[p.status]} · V{p.revision}</small></button>) : <p className="empty-list">第一个故事，从这里开始。</p>}</nav>
-      <div className="sidebar-bottom"><span className="pill">V2 / M2 · 生产库与首帧</span><p>Pi Agent 驱动规划<br/>云端生成 · 本地合成</p></div>
+      <div className="sidebar-bottom"><span className="pill">V2 / M2.1 · 分镜声音</span><p>Pi Agent 驱动规划<br/>云端生成 · 本地合成</p></div>
     </aside>
     <main>
       <header className="topbar"><span>创作工作室 <span className="slash">/</span> {project ? '故事分镜' : '新建故事'}</span><span className="connection"><i className="dot ready"/>{config?.simulated ? '离线演示' : 'OpenRouter API'}</span></header>
       <div className="workspace">
-        {config?.simulated && <div className="notice demo">离线联调模式：分镜由固定脚本返回，图像与视频是测试色卡，均非真实 AI 生成。</div>}
+        {config?.simulated && <div className="notice demo">离线联调模式：分镜由固定脚本返回，画面是测试色卡，有声镜头使用测试音，均非真实 AI 生成或配音。</div>}
         {config && (!config.plannerConfigured || !config.mediaConfigured) && <div className="notice">尚未配置 API 密钥。请在项目的 <code>.env.local</code> 中填写 <code>OPENROUTER_API_KEY</code>，然后重启服务。密钥只保留在本地。</div>}
         {error && <div className="notice error" role="alert">{error}<button onClick={() => setError('')} aria-label="关闭错误">×</button></div>}
         {!project ? <section className="intro">
@@ -99,6 +99,7 @@ export function App() {
               <div className="shot-preview">{video ? <video controls preload="metadata" src={video.url} poster={img?.url} aria-label={`镜头 ${index + 1} 视频`}/> : img ? <img src={img.url} alt={`镜头 ${index + 1} 预览`}/> : <div className="preview-placeholder"><span>▧</span><small>等待生成画面</small></div>}<span className="shot-number">{String(index + 1).padStart(2, '0')}</span><span className="duration">{shot.duration}s</span></div>
               <div className="shot-body"><input className="shot-title" aria-label={`镜头 ${index + 1} 标题`} value={shot.title} disabled={locked} onChange={e => edit(b => { b.shots[index].title = e.target.value; })}/><textarea aria-label={`镜头 ${index + 1} 描述`} rows={3} value={shot.description} disabled={locked} onChange={e => edit(b => { b.shots[index].description = e.target.value; })}/><div className="shot-settings"><label>运镜<input aria-label={`镜头 ${index + 1} 运镜`} value={shot.camera} disabled={locked} onChange={e => edit(b => { b.shots[index].camera = e.target.value; })}/></label><label className="seconds">时长 / 秒<input aria-label={`镜头 ${index + 1} 时长`} type="number" min="1" max="60" step="1" value={shot.duration} disabled={locked} onChange={e => edit(b => { b.shots[index].duration = Number(e.target.value); })}/></label></div><details><summary>生成提示词</summary><label>图像提示词<textarea value={shot.imagePrompt} disabled={locked} onChange={e => edit(b => { b.shots[index].imagePrompt = e.target.value; })}/></label><label>视频提示词<textarea value={shot.videoPrompt} disabled={locked} onChange={e => edit(b => { b.shots[index].videoPrompt = e.target.value; })}/></label></details>
               {v2 && library && <CharacterReferences key={`${project.id}:${shot.id}`} projectId={project.id} library={library} refs={shot.characterRefs ?? []} index={index} disabled={locked} onChange={refs => edit(b => { b.shots[index].characterRefs = refs; b.shots[index].characterIds = [...new Set(refs.map(r => r.characterId))]; })}/>}
+              <p className="muted">视频提示词只描述画面动作；台词、旁白及音效在下方独立填写。</p>
               <AudioEditor shot={shot} characters={v2 && library ? library.characters : draft.characters} disabled={locked} onChange={audio => edit(b => { b.shots[index].audio = audio; })}/>
               {currentJobs.filter(j => j.shotId === shot.id).map(j => <span className={`job-state ${j.status}`} key={j.id}>{kinds[j.kind]} · {statuses[j.status]}{j.error && <small>{j.error}</small>}</span>)}</div>
             </article>; })}</div>
@@ -110,12 +111,12 @@ export function App() {
             </div></section>
           </>}
           {currentJobs.length > 0 && <section className="panel progress-panel"><div className="section-row"><h2>执行进度</h2><span>{completed} / {currentJobs.length} 任务完成</span></div><progress value={completed} max={currentJobs.length}/><p className="muted">已完成素材自动复用。提交状态不明时会暂停，避免重复计费。</p></section>}
-          {final && <section className="panel final-panel"><div className="section-row"><h2>成片预览</h2><a className="download" href={`${final.url}?download=1`}>下载 MP4 ↓</a></div><video controls preload="metadata" src={final.url} aria-label="成片预览"/><p className="muted">{final.simulated ? '测试素材合成 · 非真实 AI 成片' : '云端视频生成 · FFmpeg 本地合成 · V1 静音输出'}</p></section>}
+          {final && <section className="panel final-panel"><div className="section-row"><h2>成片预览</h2><a className="download" href={`${final.url}?download=1`}>下载 MP4 ↓</a></div><video controls preload="metadata" src={final.url} aria-label="成片预览"/><p className="muted">{final.simulated ? '测试素材合成 · 有声片段为测试音，非真实 AI 配音' : '云端视频生成 · FFmpeg 本地合成 · 音轨按生成时的分镜计划处理'}</p></section>}
           {!!detail?.events.length && <details className="event-log"><summary>执行记录 · {detail.events.length}</summary>{detail.events.slice(-20).reverse().map(e => <div key={e.id}><time dateTime={e.createdAt}>{new Date(e.createdAt).toLocaleTimeString('zh-CN', { hour12: false })}</time><span>{describeEvent(e, { jobs: detail.jobs, portraitJobs: detail.portraitJobs, characterLibrary: library, storyboard: project.storyboard })}</span></div>)}</details>}
         </>}
         {project && v2 && project.storyboard && config?.m2Enabled && <Keyframes key={`frames-${project.id}`} projectId={project.id} revision={project.revision} refreshKey={JSON.stringify([project.revision, project.status, library?.revision, detail?.events.at(-1)?.id])} disabled={locked} dirty={dirty || roleDraft} rolesApproved={Boolean(library?.approval)} onBusyChange={setRoleBusy} onChanged={() => load(project.id)}/>}
         {project && <ProductionLibrary key={project.id} projectId={project.id} refreshKey={JSON.stringify([project.revision, project.status, library?.revision, detail?.events.at(-1)?.id])}/>}
-        <footer><span>STORY AGENT / {v2 ? 'V2 · M2' : 'V1'}</span><span>{config?.simulated ? 'OFFLINE FIXTURES' : `${config?.videoModel || '…'} · ${config?.resolution || '…'}`}</span></footer>
+        <footer><span>STORY AGENT / {v2 ? 'V2 · M2.1' : 'V1'}</span><span>{config?.simulated ? 'OFFLINE FIXTURES' : `${config?.videoModel || '…'} · ${config?.resolution || '…'}`}</span></footer>
       </div>
     </main>
   </div>;

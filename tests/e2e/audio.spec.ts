@@ -21,6 +21,8 @@ test('edits optional dialogue, narration and identity voice descriptions and pre
   await expect(page.getByLabel('小狐狸 声音描述')).toHaveValue('轻柔的普通话少年声');
   await shot.getByLabel('声音模式').selectOption('ambient');
   await shot.getByLabel('环境声').fill('窗外细雨');
+  await shot.getByLabel('音效', { exact: true }).fill('翻信声'); await shot.getByLabel('音效', { exact: true }).press('End'); await shot.getByLabel('音效', { exact: true }).press('Enter'); await shot.getByLabel('音效', { exact: true }).pressSequentially('脚步声');
+  await expect(shot.getByLabel('音效', { exact: true })).toHaveValue('翻信声\n脚步声');
   await page.getByRole('button', { name: '保存分镜', exact: true }).click();
   await expect(shot.getByLabel('旁白内容')).toHaveCount(0);
   await expect(shot.getByLabel('环境声')).toHaveValue('窗外细雨');

@@ -7,7 +7,7 @@ import { AppError, type Storyboard } from '../domain/storyboard.js';
 import { validateCharacterRef } from '../domain/characters.js';
 import { validatePortrait } from '../characters/images.js';
 import type { Repository } from '../storage/repository.js';
-import { runFfmpeg, type Composer, type MediaBackend } from '../media/ffmpeg.js';
+import { inspectMedia, MissingAudioTrack, COMPOSE_PARAMETERS, type Composer, type MediaBackend } from '../media/ffmpeg.js';
 import { ProviderFailed, UncertainSubmission } from '../media/openrouter.js';
 import { ProductionService, publicEntry } from './service.js';
 import type { ProductionEntry } from './store.js';
@@ -155,26 +155,27 @@ export class M2Service {
           try {
             const firstFrameUrl = !entry.providerTaskId ? this.transport ? await this.transport.frame(c.frame, (await this.files.file(id, c.frame.id)).path) : this.media.simulated ? 'https://offline.invalid/fixture.png' : undefined : undefined;
             await this.media.video({ ...c.shot, videoPrompt: c.prompt }, output, { providerTaskId: entry.providerTaskId, firstFrameUrl, persistTaskId: providerTaskId => { this.repo.production.update(id, entry.id, { providerTaskId }); } });
-            await runFfmpeg(['-i', output, '-map', '0:v:0', '-frames:v', '1', '-f', 'null', '-']);
+            const info = await inspectMedia(output); if (c.shot.audio && c.shot.audio.mode !== 'silent' && !info.hasAudio) throw new MissingAudioTrack();
             this.repo.production.update(id, entry.id, { status: 'succeeded', file: await this.outputFile(output, 'video/mp4') }); state.videos[c.shot.id] = entry.id; delete state.finalId; this.repo.m2.save(id, state); this.repo.updateProject(id, { finalArtifactId: null }); this.repo.event(id, 'video.succeeded', { entryId: entry.id, shotId: c.shot.id });
           } catch (error) {
             const saved = this.repo.production.get(id, entry.id); const unknown = error instanceof UncertainSubmission && !saved.providerTaskId;
-            this.repo.production.update(id, entry.id, { status: unknown ? 'unknown' : 'failed', providerTerminal: error instanceof ProviderFailed, error: error instanceof AppError ? error.message : '视频生成或保存失败；若已有云任务 ID，可继续查询原任务' });
-            const partial = await this.outputFile(output, 'application/octet-stream').catch(() => null); if (partial) this.repo.production.create({ projectId: id, kind: 'video', label: `${c.shot.title} · 未校验输出`, status: 'failed', file: partial, dependencies: [entry.id], simulated: this.media.simulated });
+            this.repo.production.update(id, entry.id, { status: unknown ? 'unknown' : 'failed', providerTerminal: error instanceof ProviderFailed || error instanceof MissingAudioTrack, error: error instanceof AppError ? error.message : '视频生成或保存失败；若已有云任务 ID，可继续查询原任务' });
+            const partial = await this.outputFile(output, error instanceof MissingAudioTrack ? 'video/mp4' : 'application/octet-stream').catch(() => null); if (partial) this.repo.production.create({ projectId: id, kind: 'video', label: `${c.shot.title} · ${error instanceof MissingAudioTrack ? '缺少音轨的原片' : '未校验输出'}`, status: 'failed', file: partial, dependencies: [entry.id], simulated: this.media.simulated });
             this.repo.event(id, 'video.failed', { entryId: entry.id, shotId: c.shot.id, unknown }); failed = true; break;
           }
         }
         if (!failed && this.view(id).shots.every(s => s.videoCurrent)) {
           const state = this.repo.m2.get(id); const clips = p.storyboard!.shots.map(s => this.repo.production.get(id, state.videos[s.id])); const inputs: string[] = [];
           for (const clip of clips) inputs.push((await this.files.file(id, clip.id)).path);
-          const hash = fingerprint({ clips: clips.map(c => [c.id, c.file!.sha256]), config: this.config('compose') });
+          const options = { mute: p.storyboard!.shots.map(s => !s.audio || s.audio.mode === 'silent') };
+          const hash = fingerprint({ clips: clips.map(c => [c.id, c.file!.sha256]), config: this.config('compose'), composer: COMPOSE_PARAMETERS, options });
           let final = this.repo.production.list(id).find(e => e.kind === 'compose' && e.inputHash === hash && e.status === 'succeeded');
           if (final) await this.files.file(id, final.id);
           else {
-            final = this.repo.production.create({ projectId: id, kind: 'compose', label: '首帧视频合成成片', status: 'running', inputHash: hash, dependencies: clips.map(c => c.id), model: 'ffmpeg', revision: p.revision, simulated: this.media.simulated });
+            final = this.repo.production.create({ projectId: id, kind: 'compose', label: '首帧视频合成成片', status: 'running', inputHash: hash, dependencies: clips.map(c => c.id), model: 'ffmpeg', parameters: { ...COMPOSE_PARAMETERS, ...options }, revision: p.revision, simulated: this.media.simulated });
             const path = join(this.root, 'production', id, `${final.id}.mp4`);
             this.repo.production.recordOutput(id, final.id, relative(this.root, path));
-            try { await this.composer.compose(inputs, path); final = this.repo.production.update(id, final.id, { status: 'succeeded', file: await this.outputFile(path, 'video/mp4') }); }
+            try { await this.composer.compose(inputs, path, options); final = this.repo.production.update(id, final.id, { status: 'succeeded', file: await this.outputFile(path, 'video/mp4') }); }
             catch { this.repo.production.update(id, final.id, { status: 'failed', error: '本地视频拼接失败，已保留全部镜头素材' }); await this.files.recoverOutputs(id); throw new AppError(502, '本地视频拼接失败'); }
           }
           if (this.view(id).manifestHash !== manifestHash || !this.view(id).approved) throw new AppError(409, '首帧清单已变化，停止发布成片');

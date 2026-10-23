@@ -6,6 +6,7 @@ import { AppError, type Storyboard } from '../domain/storyboard.js';
 import type { MediaBackend, TaskContext } from './ffmpeg.js';
 import type { KeyframeInput } from '../production/m2.js';
 import { VIDEO_PROMPT_VERSION } from './video-prompt.js';
+import { COMPOSE_PARAMETERS } from './ffmpeg.js';
 
 export const DEFAULT_VIDEO_MODEL = 'heygen/heygen-video-1';
 export const DEFAULT_IMAGE_MODEL = 'qwen/qwen-image-2.1-turbo';
@@ -119,7 +120,7 @@ export class OpenRouterMedia implements MediaBackend {
     return this.generateImage(input.prompt, output, '16:9', { ...routing, ...(references.length ? { input_references: references } : {}) });
   }
   portraitConfig() { return { model: this.imageModel, parameters: { resolution: this.options.imageResolution || DEFAULT_IMAGE_RESOLUTION, aspect_ratio: '1:1', n: 1 } }; }
-  generationConfig(kind: 'image' | 'video' | 'compose') { return kind === 'image' ? { model: this.imageModel, parameters: { resolution: this.options.imageResolution || DEFAULT_IMAGE_RESOLUTION, aspect_ratio: '16:9', n: 1 } } : kind === 'video' ? { model: this.videoModel, parameters: { resolution: this.resolution, aspect_ratio: '16:9', audioStrategy: this.videoModel === DEFAULT_VIDEO_MODEL ? 'heygen-native-default' : 'catalogue-gated', promptVersion: VIDEO_PROMPT_VERSION } } : { model: 'ffmpeg', parameters: { width: 1280, height: 720, fps: 24 } }; }
+  generationConfig(kind: 'image' | 'video' | 'compose') { return kind === 'image' ? { model: this.imageModel, parameters: { resolution: this.options.imageResolution || DEFAULT_IMAGE_RESOLUTION, aspect_ratio: '16:9', n: 1 } } : kind === 'video' ? { model: this.videoModel, parameters: { resolution: this.resolution, aspect_ratio: '16:9', audioStrategy: this.videoModel === DEFAULT_VIDEO_MODEL ? 'heygen-native-default' : 'catalogue-gated', promptVersion: VIDEO_PROMPT_VERSION } } : { model: 'ffmpeg', parameters: { ...COMPOSE_PARAMETERS } }; }
   async estimatePortrait() {
     const endpoint = await this.json(`/images/models/${this.imageModel}/endpoints`);
     const prices = (endpoint.endpoints ?? []).flatMap((e: any) => e.pricing ?? []).filter((p: any) => p.billable === 'output_image' && p.unit === 'image' && (!p.variant || p.variant === (this.options.imageResolution || DEFAULT_IMAGE_RESOLUTION).toLowerCase())).map((p: any) => Number(p.cost_usd)).filter(Number.isFinite);
