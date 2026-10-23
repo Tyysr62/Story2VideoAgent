@@ -10,7 +10,7 @@ import { createApp } from './app.js';
 import { resolveDirectorConfig } from '../config/providers.js';
 import { CharacterService } from '../characters/service.js';
 import { M2Service } from '../production/m2.js';
-import { ObjectStorage } from '../media/object-storage.js';
+import { createFrameTransport } from '../media/frame-transport.js';
 
 dotenv({ path: '.env.local', quiet: true });
 const demo = process.argv.includes('--demo');
@@ -27,7 +27,7 @@ if (demo) {
 }
 const media = demo ? new MockMedia() : new OpenRouterMedia({ apiKey: orKey, videoModel: process.env.VIDEO_MODEL, imageModel: process.env.IMAGE_MODEL, resolution: process.env.VIDEO_RESOLUTION || '480p', imageResolution: process.env.IMAGE_RESOLUTION, diagnosticRoot: join(root, 'diagnostics') });
 const workflow = new Workflow(repo, planner, media, new FfmpegComposer(), root);
-const m2 = new M2Service(repo, root, media, new FfmpegComposer(), demo ? undefined : new ObjectStorage());
+const m2 = new M2Service(repo, root, media, new FfmpegComposer(), demo ? undefined : createFrameTransport());
 const characters = new CharacterService(repo, root, demo ? { simulated: true, validatePortraitReference: async () => ({}), portrait: (prompt, output) => media.image({ id: 'portrait-fixture', title: '测试角色图', description: prompt, camera: '正面', imagePrompt: prompt, videoPrompt: prompt, duration: 1, characterIds: [] }, output) } : media as OpenRouterMedia);
 const app = await createApp({ repo, workflow, characters, m2, dataRoot: root, staticRoot: resolve('dist'), publicConfig: {
   plannerConfigured: demo || Boolean(director.apiKey), mediaConfigured: demo || Boolean(orKey), simulated: demo,

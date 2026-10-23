@@ -89,11 +89,30 @@ HeyGen 官方说明 Video 1 原生生成场景声音，但 2026-10-23 OpenRouter
 
 FFmpeg 保留输入中的声画相对时序，将无声片段补静音、短音轨补齐、超长音轨截到视频结束，再统一参数拼接。生产库中的云端原片保持原样，用户指定的静音策略应用于成片。若要求有声但返回没有音轨，原片保留并报错，不自动重新调用模型。旧版本未完成的云任务也不能因新版 Prompt 指纹变化而自动再提交费用。
 
-### V2 视频素材传输：自有 S3 兼容对象存储
+### V2 视频素材传输：阿里云 OSS / S3 兼容对象存储
 
-在 `.env.local` 本地配置以下字段，不要在聊天或 Git 中发送凭据：
+在 `.env.local` 本地配置，凭据不要发到聊天或 Git。阿里云 OSS 使用原生 SDK 与 V4 签名：
 
 ```dotenv
+MEDIA_STORAGE_PROVIDER=oss
+MEDIA_OSS_REGION=oss-cn-beijing
+MEDIA_OSS_ENDPOINT=https://oss-cn-beijing.aliyuncs.com
+MEDIA_OSS_BUCKET=your-private-bucket
+MEDIA_OSS_ACCESS_KEY_ID=fill-locally
+MEDIA_OSS_ACCESS_KEY_SECRET=fill-locally
+MEDIA_OSS_PREFIX=story-agent
+# 仅临时 STS 凭据需要；过期需在本地更新并重启。
+MEDIA_OSS_STS_TOKEN=
+```
+
+OSS endpoint 填标准公网地域域名，不填带 Bucket 的域名、内网域名或 CNAME。密钥是阿里云 RAM AccessKey，与 DeepSeek/OpenRouter key 独立；本应用限定所用桶/前缀的 PutObject、GetObject 权限即可。对象上传设为 private，通过一小时有效的 V4 签名 GET 链接访问，无须公开桶。服务端会验证图片类型、大小和 SHA-256，不进行默认上传测试或自动提交视频。
+
+[官方初始化说明](https://www.alibabacloud.com/help/en/oss/initialization-10)、[官方 V4 签名链接说明](https://www.alibabacloud.com/help/en/oss/developer-reference/add-signatures-to-urls)。
+
+使用 AWS S3、Cloudflare R2 等 S3 兼容服务时配置：
+
+```dotenv
+MEDIA_STORAGE_PROVIDER=s3
 MEDIA_S3_ENDPOINT=https://your-s3-compatible-endpoint
 MEDIA_S3_REGION=us-east-1
 MEDIA_S3_BUCKET=your-private-bucket

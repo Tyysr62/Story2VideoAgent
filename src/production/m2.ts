@@ -134,7 +134,7 @@ export class M2Service {
     for (const c of compiled) if (this.repo.production.list(id).some(e => e.kind === 'video' && e.shotId === c.shot.id && e.inputHash !== c.hash && e.providerTaskId && !e.providerTerminal && e.status !== 'succeeded')) throw new AppError(409, '该镜头存在旧版本云任务，请先到供应商核实原任务；已阻止另一次收费提交');
     for (const c of compiled) if (this.repo.production.list(id).some(e => e.kind === 'video' && e.inputHash === c.hash && e.status === 'unknown')) throw new UncertainSubmission();
     const newInputs = compiled.filter(c => { const row = view.shots.find(s => s.shotId === c.shot.id)!; return !(row.videoCurrent && !input.force) && !row.videoResumable; });
-    if (newInputs.length && !this.media.simulated && !this.transport?.configured) throw new AppError(503, '请先在本地配置 S3 兼容对象存储，用于传输已确认首帧；未提交视频费用');
+    if (newInputs.length && !this.media.simulated && !this.transport?.configured) throw new AppError(503, '请先在本地配置 阿里云 OSS 或 S3 兼容对象存储，用于传输已确认首帧；未提交视频费用');
     if (newInputs.length && !this.media.simulated && !this.media.validateImageToVideo) throw new AppError(503, '视频后端未提供首帧能力校验');
     this.repo.updateProject(id, { status: 'generating', error: null });
     const work = (async () => {

@@ -48,6 +48,9 @@ test.each([
   { MEDIA_OSS_ENDPOINT: 'https://oss-cn-beijing.aliyuncs.com/?secret=value' },
   { MEDIA_OSS_ENDPOINT: 'https://user:password@oss-cn-beijing.aliyuncs.com' },
   { MEDIA_OSS_PREFIX: '../secrets' },
+  { MEDIA_OSS_PREFIX: '/leading-slash' },
+  { MEDIA_OSS_PREFIX: 'trailing-slash/' },
+  { MEDIA_OSS_PREFIX: 'double//slash' },
 ])('rejects incompatible endpoint or prefix without revealing the supplied value: %o', patch => {
   expect(() => new AliyunOssStorage({ ...env, ...patch })).toThrow(/端点|前缀|地域/);
 });

@@ -13,6 +13,7 @@ export class AliyunOssStorage implements FrameTransport {
     const bucket = env.MEDIA_OSS_BUCKET?.trim() || ''; const region = env.MEDIA_OSS_REGION?.trim() || '';
     const accessKeyId = env.MEDIA_OSS_ACCESS_KEY_ID?.trim() || ''; const accessKeySecret = env.MEDIA_OSS_ACCESS_KEY_SECRET?.trim() || '';
     this.prefix = storagePrefix(env.MEDIA_OSS_PREFIX);
+    if (this.prefix.split('/').some(segment => !segment)) throw new AppError(400, 'OSS 前缀不能包含空路径段或首尾斜杠');
     this.configured = Boolean(bucket && region && accessKeyId && accessKeySecret);
     if (!this.configured) return;
     if (!/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(bucket)) throw new AppError(400, 'OSS Bucket 名称配置无效');
