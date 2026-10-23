@@ -1,27 +1,41 @@
 import { DatabaseSync } from 'node:sqlite';
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { CharacterStore } from './characters.js';
 import { AppError, validateStoryboard, type Project, type Job, type Artifact, type ProjectEvent } from '../domain/storyboard.js';
 
 const stamp = () => new Date().toISOString();
 export class Repository {
   private db: DatabaseSync;
+  readonly characters: CharacterStore;
   constructor(path: string) {
+    const existed = path !== ':memory:' && existsSync(path);
     mkdirSync(dirname(path), { recursive: true }); this.db = new DatabaseSync(path);
+    const migrated = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='character_libraries'").get();
+    // VACUUM INTO includes committed WAL state and never copies a partial live DB file.
+    if (existed && !migrated) {
+      const backup = `${path}.backup-${Date.now()}-${randomUUID()}`;
+      try { this.db.exec(`VACUUM INTO '${backup.replaceAll("'", "''")}'`); }
+      catch (error) { this.db.close(); throw error; }
+    }
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS projects(id TEXT PRIMARY KEY, payload TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY, project_id TEXT NOT NULL, logical_key TEXT UNIQUE NOT NULL, payload TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS artifacts(id TEXT PRIMARY KEY, project_id TEXT NOT NULL, payload TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT NOT NULL, type TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL);`);
+      CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT NOT NULL, type TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS character_libraries(project_id TEXT PRIMARY KEY, payload TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS character_images(id TEXT PRIMARY KEY, project_id TEXT NOT NULL, payload TEXT NOT NULL);`);
+    this.characters = new CharacterStore(this.db, id => this.getProject(id));
   }
   close() { this.db.close(); }
   private read<T>(row: unknown): T { return JSON.parse((row as { payload: string }).payload) as T; }
   private putProject(p: Project) { p.updatedAt = stamp(); this.db.prepare('UPDATE projects SET payload=? WHERE id=?').run(JSON.stringify(p), p.id); }
   private transaction<T>(fn: () => T): T { this.db.exec('BEGIN IMMEDIATE'); try { const v = fn(); this.db.exec('COMMIT'); return v; } catch (e) { this.db.exec('ROLLBACK'); throw e; } }
-  createProject(story: string): Project {
+  createProject(story: string, workflowVersion?: 2): Project {
     if (!story.trim() || story.length > 20000) throw new AppError(400, '故事需要 1–20000 个字符');
-    const now = stamp(); const p: Project = { id: randomUUID(), story: story.trim(), revision: 0, storyboard: null, status: 'draft', approvedRevision: null, finalArtifactId: null, error: null, createdAt: now, updatedAt: now };
+    if (workflowVersion !== undefined && workflowVersion !== 2) throw new AppError(400, '不支持的工作流版本');
+    const now = stamp(); const p: Project = { ...(workflowVersion === 2 ? { workflowVersion } : {}), id: randomUUID(), story: story.trim(), revision: 0, storyboard: null, status: 'draft', approvedRevision: null, finalArtifactId: null, error: null, createdAt: now, updatedAt: now };
     this.transaction(() => { this.db.prepare('INSERT INTO projects VALUES(?,?)').run(p.id, JSON.stringify(p)); this.event(p.id, 'project.created', {}); }); return p;
   }
   listProjects(): Project[] { return this.db.prepare('SELECT payload FROM projects ORDER BY rowid DESC').all().map(r => this.read<Project>(r)); }
@@ -32,7 +46,11 @@ export class Repository {
     const storyboard = validateStoryboard(value);
     return this.transaction(() => {
       const p = this.getProject(id); this.assertRevision(p, revision);
-      if (p.status === 'generating') throw new AppError(409, '生成期间不能修改分镜');
+      if (p.status === 'generating' || (p.workflowVersion === 2 && p.status === 'planning')) throw new AppError(409, '规划或生成期间不能修改分镜');
+      if (p.workflowVersion === 2) {
+        this.characters.validateStoryboard(id, storyboard);
+        if (p.storyboard?.style !== storyboard.style) this.characters.invalidateApproval(id);
+      }
       Object.assign(p, { storyboard, revision: p.revision + 1, approvedRevision: null, finalArtifactId: null, error: null, status: 'awaiting_approval' });
       this.putProject(p); this.event(id, 'storyboard.updated', { revision: p.revision, shots: storyboard.shots.length }); return p;
     });
@@ -42,6 +60,10 @@ export class Repository {
       const p = this.getProject(id); this.assertRevision(p, revision);
       if (!p.storyboard) throw new AppError(409, '请先生成分镜');
       if (p.status === 'generating') throw new AppError(409, '项目正在生成');
+      if (p.workflowVersion === 2) {
+        this.characters.validateStoryboard(id, p.storyboard, true);
+        if (!this.characters.snapshot(id).approval) throw new AppError(409, '请先确认角色定稿');
+      }
       p.approvedRevision = revision; p.status = 'approved'; p.error = null;
       this.putProject(p); this.event(id, 'project.approved', { revision }); return p;
     });
