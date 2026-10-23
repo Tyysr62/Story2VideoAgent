@@ -34,5 +34,12 @@ export function AudioEditor({ shot, characters, disabled, onChange }: { shot: St
 
 export function VoiceProfiles({ board, characters, disabled, onChange }: { board: Storyboard; characters: Role[]; disabled: boolean; onChange(profile: NonNullable<Storyboard['audioProfile']>): void }) {
   const profile = board.audioProfile ?? { narratorVoice: '', characterVoices: [] };
-  return <details className="voice-profiles"><summary>全片声音设定</summary><p className="muted">同一角色沿用声音描述。当前为原生音视频生成的提示约束，尚不保证跨镜头固定音色；本版不生成配乐。</p><label>旁白声音描述<input aria-label="旁白声音描述" value={profile.narratorVoice} maxLength={1000} disabled={disabled} onChange={e => onChange({ ...profile, narratorVoice: e.target.value })} placeholder="例如：温暖、克制的普通话女声"/></label>{characters.map(c => <label key={c.id}>@{c.name} · 声音描述<input aria-label={`${c.name} 声音描述`} value={profile.characterVoices.find(v => v.characterId === c.id)?.description ?? ''} maxLength={1000} disabled={disabled} onChange={e => onChange({ ...profile, characterVoices: [...profile.characterVoices.filter(v => v.characterId !== c.id && characters.some(role => role.id === v.characterId)), { characterId: c.id, description: e.target.value }] })}/></label>)}</details>;
+  return <details className="voice-profiles">
+    <summary>全片声音设定</summary><p className="muted">同一角色沿用声音描述。当前为原生音视频生成的提示约束，尚不保证跨镜头固定音色；本版不生成配乐。</p>
+    <label>旁白声音描述<input aria-label="旁白声音描述" value={profile.narratorVoice} maxLength={1000} disabled={disabled} onChange={e => onChange({ ...profile, narratorVoice: e.target.value })} placeholder="例如：温暖、克制的普通话女声"/></label>
+    {characters.map(c => <div key={c.id}>
+      <label>@{c.name} · 声音描述<input aria-label={`${c.name} 声音描述`} value={profile.characterVoices.find(v => v.characterId === c.id)?.description ?? ''} maxLength={1000} disabled={disabled} onChange={e => onChange({ ...profile, characterVoices: [...profile.characterVoices.filter(v => v.characterId !== c.id && characters.some(role => role.id === v.characterId)), ...(e.target.value.trim() ? [{ characterId: c.id, description: e.target.value }] : [])] })}/></label>
+      {profile.characterVoices.some(v => v.characterId === c.id) && <button disabled={disabled} aria-label={`清除${c.name}声音设定`} onClick={() => onChange({ ...profile, characterVoices: profile.characterVoices.filter(v => v.characterId !== c.id) })}>清除声音设定</button>}
+    </div>)}
+  </details>;
 }

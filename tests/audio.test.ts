@@ -62,3 +62,15 @@ test('cannot delete an identity that is only referenced by off-screen dialogue',
     expect(() => repo.characters.deleteCharacter(p.id, repo.characters.snapshot(p.id).revision, 'fox')).toThrow(/引用/);
   } finally { repo.close(); }
 });
+
+test('voice profiles must be explicitly cleared and saved before deleting an otherwise unused identity', () => {
+  const repo = new Repository(':memory:');
+  try {
+    const p = repo.createProject('闲置声音', 2); repo.saveStoryboard(p.id, 0, board(1), true);
+    const b = repo.getProject(p.id).storyboard!; b.shots[0].characterIds = []; b.shots[0].characterRefs = [];
+    b.audioProfile = { narratorVoice: '', characterVoices: [{ characterId: 'fox', description: '少年声' }] }; repo.saveStoryboard(p.id, 1, b);
+    expect(() => repo.characters.deleteCharacter(p.id, repo.characters.snapshot(p.id).revision, 'fox')).toThrow(/声音设定/);
+    b.audioProfile.characterVoices = []; repo.saveStoryboard(p.id, 2, b); repo.characters.deleteCharacter(p.id, repo.characters.snapshot(p.id).revision, 'fox');
+    expect(() => repo.characters.approve(p.id, repo.characters.snapshot(p.id).revision)).not.toThrow();
+  } finally { repo.close(); }
+});

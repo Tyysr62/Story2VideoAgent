@@ -153,6 +153,7 @@ export class CharacterStore {
     return (this.project(projectId).storyboard?.shots ?? []).filter(s => (s.characterRefs ?? []).some(r => r.characterId === characterId && (!lookId || r.lookId === lookId)) || !lookId && s.audio?.dialogue.some(d => d.characterId === characterId)).map(s => s.id);
   }
   private assertUnused(projectId: string, characterId: string, lookId?: string) {
+    if (!lookId && this.project(projectId).storyboard?.audioProfile?.characterVoices.some(v => v.characterId === characterId)) throw new AppError(409, '角色仍有全片声音设定，请先清除该声音设定并保存分镜，再删除角色');
     const shots = this.impact(projectId, characterId, lookId);
     if (shots.length) throw new AppError(409, `角色或造型已被镜头引用：${shots.join('、')}`);
   }

@@ -61,10 +61,12 @@ export class FfmpegComposer implements Composer {
       for (const [i, path] of inputs.entries()) {
         const hasAudio = !options.mute?.[i] && (await inspectMedia(path)).hasAudio;
         const target = join(temporary, `${i}.mp4`); normalized.push(target);
+        // Keep the common input clock: resetting each stream separately would
+        // advance delayed dialogue. Pad leading silence instead.
         await runFfmpeg(['-threads', '1', '-i', path, ...(!hasAudio ? ['-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo'] : []),
           '-map', '0:v:0', '-map', hasAudio ? '0:a:0' : '1:a:0',
-          '-vf', 'scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=24,format=yuv420p,setpts=PTS-STARTPTS',
-          '-af', 'aresample=48000,aformat=channel_layouts=stereo,asetpts=PTS-STARTPTS,apad',
+          '-vf', 'scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=24:start_time=0,format=yuv420p',
+          '-af', 'aresample=48000:async=1:first_pts=0,aformat=channel_layouts=stereo,apad',
           '-shortest', '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '18', '-c:a', 'aac', '-b:a', '192k', target]);
       }
       const filters = normalized.flatMap((_, i) => [`[${i}:v]setpts=PTS-STARTPTS[v${i}]`, `[${i}:a]asetpts=PTS-STARTPTS[a${i}]`]);

@@ -56,3 +56,12 @@ test('pads short soundtracks to the full video and explicitly mutes a shot in th
   expect((await audioSample(root, b, 0.4)).amplitude).toBeGreaterThan(100);
   expect((await inspectMedia(out)).duration).toBeCloseTo(2, 1);
 });
+
+test('preserves a delayed soundtrack instead of shifting speech to the beginning of the shot', async () => {
+  const root = await dir(); const input = join(root, 'delayed.mp4'), output = join(root, 'delayed-final.mp4');
+  await runFfmpeg(['-f', 'lavfi', '-i', 'color=c=blue:s=160x90:r=24:d=1', '-itsoffset', '0.5', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=0.5:sample_rate=48000', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', input]);
+  await new FfmpegComposer().compose([input], output);
+  expect((await audioSample(root, output, 0.1)).amplitude).toBeLessThan(5);
+  expect((await audioSample(root, output, 0.65)).amplitude).toBeGreaterThan(100);
+  expect((await inspectMedia(output)).duration).toBeCloseTo(1, 1);
+});

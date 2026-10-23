@@ -1,4 +1,7 @@
 import { test, expect } from '@playwright/test';
+import { readFile } from 'node:fs/promises';
+import { unzipSync, strFromU8 } from 'fflate';
+import { inspectMedia } from '../../src/media/ffmpeg.js';
 
 test('edits optional dialogue, narration and identity voice descriptions and preserves them after reload', async ({ page }) => {
   await page.goto('/'); await page.getByLabel('你的故事 / 创作要求').fill(`声音规划-${Date.now()}`); await page.getByRole('button', { name: '开始规划分镜' }).click();
@@ -19,6 +22,9 @@ test('edits optional dialogue, narration and identity voice descriptions and pre
   await expect(shot.getByLabel('旁白内容')).toHaveValue('那封信，他保存了四十年。');
   await page.locator('.voice-profiles > summary').click();
   await expect(page.getByLabel('小狐狸 声音描述')).toHaveValue('轻柔的普通话少年声');
+  await shot.locator('.audio-editor').screenshot({ path: 'docs/screenshots/v2-m2-1-audio.png' });
+  await page.getByRole('button', { name: '清除小狐狸声音设定', exact: true }).click();
+  await expect(page.getByLabel('小狐狸 声音描述')).toHaveValue('');
   await shot.getByLabel('声音模式').selectOption('ambient');
   await shot.getByLabel('环境声').fill('窗外细雨');
   await shot.getByLabel('音效', { exact: true }).fill('翻信声'); await shot.getByLabel('音效', { exact: true }).press('End'); await shot.getByLabel('音效', { exact: true }).press('Enter'); await shot.getByLabel('音效', { exact: true }).pressSequentially('脚步声');
@@ -26,5 +32,13 @@ test('edits optional dialogue, narration and identity voice descriptions and pre
   await page.getByRole('button', { name: '保存分镜', exact: true }).click();
   await expect(shot.getByLabel('旁白内容')).toHaveCount(0);
   await expect(shot.getByLabel('环境声')).toHaveValue('窗外细雨');
+  await page.getByRole('button', { name: /^确认 V\d+$/ }).click(); await page.getByRole('button', { name: '生成测试成片' }).click();
+  await expect(page.getByLabel('成片预览', { exact: true })).toBeVisible({ timeout: 60000 });
+  const videoDownload = page.waitForEvent('download'); await page.getByRole('link', { name: '下载 MP4' }).click();
+  expect((await inspectMedia((await (await videoDownload).path())!)).hasAudio).toBe(true);
+  const zipDownload = page.waitForEvent('download'); await page.getByRole('link', { name: '导出项目生产库 ZIP' }).click();
+  const archive = unzipSync(await readFile((await (await zipDownload).path())!)); const manifest = JSON.parse(strFromU8(archive['manifest.json']));
+  expect(manifest.entries.some((e: any) => e.kind === 'video' && e.prompt?.includes('窗外细雨') && e.prompt?.includes('翻信声'))).toBe(true);
+  expect(manifest.entries.some((e: any) => e.kind === 'storyboard' && e.content?.shots[0].audio?.dialogue[0]?.text === '原来，你一直都记得。')).toBe(true);
   await page.setViewportSize({ width: 390, height: 844 }); expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
 });
