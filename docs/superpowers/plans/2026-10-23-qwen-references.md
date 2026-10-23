@@ -12,9 +12,9 @@
 - [x] 更新 .env.example 并运行 `npm test -- tests/openrouter.test.ts tests/character-media.test.ts`，通过后进入 B。
 
 ## 模块 B：角色编辑与生产库溯源
-- [ ] 在 tests/character-media.test.ts、tests/character-api.test.ts 增加跨造型参考、重复请求变更输入、跨角色拒绝、损坏图片拒绝及导出溯源测试，先观察失败。
-- [ ] 修改 src/domain/characters.ts、src/storage/characters.ts、src/characters/service.ts、src/server/characters.ts。请求增加 reference:{lookId,lookVersionId} 与 editInstruction；只允许同角色已有图片版本。生成快照增加参考资产摘要及版本、修改要求；生产库添加依赖。异步检查后重新校验 CAS 和任务占用。
-- [ ] 运行角色、生产库及适配器测试和 `npm run check`，通过后进入 C。
+- [x] 在 tests/character-media.test.ts、tests/character-api.test.ts 增加跨造型参考、重复请求变更输入、跨角色拒绝、损坏图片拒绝及导出溯源测试，先观察失败。
+- [x] 修改 src/domain/characters.ts、src/storage/characters.ts、src/characters/service.ts、src/server/characters.ts。请求增加 reference:{lookId,lookVersionId} 与 editInstruction；只允许同角色已有图片版本。生成快照增加参考资产摘要及版本、修改要求；生产库添加依赖。异步检查后重新校验 CAS 和任务占用。
+- [x] 运行角色、生产库及适配器测试和 `npm run check`，通过后进入 C。
 
 ## 模块 C：角色参考选择与预览
 - [ ] 在 tests/e2e/characters.spec.ts 增加上传原图→新建年龄造型→选择原图版本→输入修改要求→确认费用生成→保留历史及生产记录的浏览器测试，先确认入口缺失失败。

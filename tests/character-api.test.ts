@@ -16,7 +16,7 @@ async function setup() {
   const output = async (_: unknown, path: string) => { mediaCalls++; await mkdir(dirname(path), { recursive: true }); await writeFile(path, 'media'); };
   const planner = { plan: async () => board(2) };
   const workflow = new Workflow(repo, planner, { simulated: true, image: output, video: output }, { compose: (i, p) => output(i, p) }, root);
-  const characters = new CharacterService(repo, root, { simulated: true, portrait: async (_, path) => { await mkdir(dirname(path), { recursive: true }); await writeFile(path, await sharp({ create: { width: 64, height: 64, channels: 3, background: 'red' } }).png().toBuffer()); } });
+  const characters = new CharacterService(repo, root, { simulated: true, validatePortraitReference: async () => ({}), portrait: async (_, path) => { await mkdir(dirname(path), { recursive: true }); await writeFile(path, await sharp({ create: { width: 64, height: 64, channels: 3, background: 'red' } }).png().toBuffer()); } });
   const app = await createApp({ repo, workflow, characters, dataRoot: root, publicConfig: { simulated: true } });
   cleanup.push(async () => { await characters.idle(); await workflow.idle(); await app.close(); repo.close(); await rm(root, { recursive: true, force: true }); });
   const call = async (method: 'POST' | 'PUT' | 'PATCH' | 'DELETE', url: string, payload: Record<string, unknown>) => app.inject({ method, url: `/api${url}`, payload });
@@ -65,4 +65,22 @@ test('replanning passes registered identity context and does not create duplicat
   expect((await call('POST', `/projects/${p.id}/plan`, { revision: 1 })).statusCode).toBe(200);
   expect(repo.characters.snapshot(p.id).characters.map(c => c.id)).toEqual([original]);
   expect((await app.inject(`/api/projects/${p.id}`)).json().project.revision).toBe(2);
+});
+
+
+test('portrait API accepts an immutable reference version and archives edit input without accepting arbitrary paths', async () => {
+  const { app, repo, call } = await setup(); const p = repo.createProject('参考编辑', 2);
+  let lib = repo.characters.createCharacter(p.id, 0, { name: '陈伯', description: '退休教师' }); const c = lib.characters[0];
+  lib = repo.characters.createLook(p.id, lib.revision, c.id, { name: '青年', description: '黑发蓝衣' }); const look = lib.characters[0].looks[0];
+  const url = `/api/projects/${p.id}/characters/${c.id}/looks/${look.id}`;
+  const image = await sharp({ create: { width: 64, height: 64, channels: 3, background: 'blue' } }).png().toBuffer();
+  const uploaded = await app.inject({ method: 'PUT', url: url + '/image', headers: { 'content-type': 'image/png', 'x-library-revision': String(lib.revision) }, payload: image });
+  expect(uploaded.statusCode).toBe(200); lib = uploaded.json(); const source = lib.characters[0].looks[0].versions.at(-1)!;
+  const payload = { revision: lib.revision, requestId: 'api-reference', acceptCost: true, editInstruction: '微笑，保持脸型', reference: { lookId: look.id, lookVersionId: source.id } };
+  const invalid = await app.inject({ method: 'POST', url: url + '/portrait', payload: { ...payload, reference: { ...payload.reference, path: 'C:/secret.png' } } }); expect(invalid.statusCode).toBe(400);
+  const generated = await app.inject({ method: 'POST', url: url + '/portrait', payload }); expect(generated.statusCode).toBe(200);
+  const job = generated.json(); expect(job.status).toBe('succeeded'); expect(job.inputSnapshot.reference.assetId).toBe(source.imageAssetId);
+  expect((await app.inject({ method: 'POST', url: url + '/portrait', payload })).json().id).toBe(job.id);
+  expect((await app.inject({ method: 'POST', url: url + '/portrait', payload: { ...payload, editInstruction: '换衣' } })).statusCode).toBe(409);
+  expect(repo.characters.snapshot(p.id).characters[0].looks[0].versions).toHaveLength(3);
 });

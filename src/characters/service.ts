@@ -6,10 +6,12 @@ import { AppError } from '../domain/storyboard.js';
 import type { CharacterLibrary, GenerationSnapshot } from '../domain/characters.js';
 import type { Repository } from '../storage/repository.js';
 import { UncertainSubmission } from '../media/openrouter.js';
+import { ProductionService } from '../production/service.js';
+import type { ReferenceImage } from '../production/m2.js';
 import { validatePortrait } from './images.js';
 
-export interface PortraitBackend { readonly simulated: boolean; readonly imageModel?: string; portraitConfig?(): { model: string; parameters: Record<string, string | number | boolean> }; portrait(prompt: string, output: string): Promise<void>; estimatePortrait?(): Promise<unknown>; }
-export const portraitRequestSchema = z.object({ revision: z.number().int().nonnegative(), characterId: z.string().min(1).max(100), lookId: z.string().min(1).max(100), requestId: z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/), acceptCost: z.boolean() }).strict();
+export interface PortraitBackend { readonly simulated: boolean; readonly imageModel?: string; portraitConfig?(): { model: string; parameters: Record<string, string | number | boolean> }; validatePortraitReference?(): Promise<unknown>; portrait(prompt: string, output: string, reference?: ReferenceImage): Promise<void>; estimatePortrait?(): Promise<unknown>; }
+export const portraitRequestSchema = z.object({ revision: z.number().int().nonnegative(), characterId: z.string().min(1).max(100), lookId: z.string().min(1).max(100), requestId: z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/), acceptCost: z.boolean(), reference: z.object({ lookId: z.string().min(1).max(100), lookVersionId: z.string().min(1).max(100) }).strict().optional(), editInstruction: z.string().trim().max(2000).default('') }).strict();
 export class CharacterService {
   readonly jobs;
   private active = new Set<Promise<unknown>>();
@@ -48,30 +50,55 @@ export class CharacterService {
   async generate(projectId: string, value: z.input<typeof portraitRequestSchema>) {
     const input = portraitRequestSchema.parse(value);
     if (!input.acceptCost) throw new AppError(409, '请先确认本次角色图片生成费用');
-    const existing = this.jobs.get(projectId, input.requestId);
-    if (existing) {
-      if (existing.characterId !== input.characterId || existing.lookId !== input.lookId || existing.libraryRevision !== input.revision) throw new AppError(409, '请求编号已用于其他输入');
+    const repeated = () => {
+      const existing = this.jobs.get(projectId, input.requestId);
+      if (!existing) return;
+      const reference = existing.inputSnapshot?.reference;
+      if (existing.characterId !== input.characterId || existing.lookId !== input.lookId || existing.libraryRevision !== input.revision
+        || (existing.inputSnapshot?.editInstruction ?? '') !== input.editInstruction
+        || reference?.lookId !== input.reference?.lookId || reference?.lookVersionId !== input.reference?.lookVersionId) throw new AppError(409, '请求编号已用于其他输入');
       return existing;
-    }
+    };
+    const existing = repeated(); if (existing) return existing;
     this.assertIdle(projectId);
     if (this.jobs.list(projectId).some(j => j.lookId === input.lookId && j.status === 'unknown')) throw new UncertainSubmission();
     const { character, look, version } = this.selected(projectId, input.revision, input.characterId, input.lookId);
+    let reference: ReferenceImage | undefined;
+    let referenceSnapshot: GenerationSnapshot['reference'];
+    if (input.reference) {
+      const sourceLook = character.looks.find(l => l.id === input.reference!.lookId);
+      const sourceVersion = sourceLook?.versions.find(v => v.id === input.reference!.lookVersionId);
+      if (!sourceVersion) throw new AppError(404, '参考版本不属于本项目的同一角色');
+      if (!sourceVersion.imageAssetId) throw new AppError(400, '所选参考版本尚无图片');
+      if (!this.backend.validatePortraitReference) throw new AppError(400, '当前生图适配器不支持角色参考编辑');
+      const asset = this.repo.characters.getImageAsset(projectId, sourceVersion.imageAssetId);
+      const verified = await new ProductionService(this.repo, this.root).file(projectId, `character:${asset.id}`);
+      await this.backend.validatePortraitReference();
+      reference = { assetId: asset.id, path: verified.path, mime: asset.mime, sha256: asset.sha256 };
+      referenceSnapshot = { characterId: character.id, ...input.reference, assetId: asset.id, sha256: asset.sha256 };
+      // An overlapping edit or submission during asynchronous preflight must not bill stale inputs.
+      const completed = repeated(); if (completed) return completed;
+      this.assertIdle(projectId); this.selected(projectId, input.revision, input.characterId, input.lookId);
+      if (this.jobs.list(projectId).some(j => j.lookId === input.lookId && j.status === 'unknown')) throw new UncertainSubmission();
+    }
     const style = this.repo.getProject(projectId).storyboard?.style ?? '清晰角色设定图';
-    const prompt = `角色主参考图，单一人物，正面或四分之三视角，面部清晰，主体完整，简单纯色背景，不含文字、水印或分格。\n全局画风：${style}\n角色身份：${character.description}\n造型：${version.description}`;
+    let prompt = `角色主参考图，单一人物，正面或四分之三视角，面部清晰，主体完整，简单纯色背景，不含文字、水印或分格。\n全局画风：${style}\n角色身份：${character.description}\n造型：${version.description}`;
+    if (reference) prompt += '\n参考图 1 是同一角色的身份依据。保持其五官、脸型和可辨识特征；仅按目标造型及修改要求调整年龄、表情或服装，勿复制原图中的背景、文字或布局。';
+    if (input.editInstruction) prompt += `\n本次修改要求：${input.editInstruction}`;
     const now = new Date().toISOString();
     const config = this.backend.portraitConfig?.() ?? { model: this.backend.imageModel ?? (this.backend.simulated ? 'offline-fixture' : 'injected-adapter'), parameters: {} };
-    const inputSnapshot: GenerationSnapshot = { ...config, prompt, identityDescription: character.description, lookDescription: version.description, style };
+    const inputSnapshot: GenerationSnapshot = { ...config, prompt, identityDescription: character.description, lookDescription: version.description, style, editInstruction: input.editInstruction, ...(referenceSnapshot ? { reference: referenceSnapshot } : {}) };
     const job = this.jobs.create({ id: input.requestId, projectId, characterId: character.id, lookId: look.id, lookVersionId: version.id, libraryRevision: input.revision,
       inputHash: createHash('sha256').update(JSON.stringify({ ...inputSnapshot, lookVersionId: version.id })).digest('hex'), inputSnapshot, status: 'running', assetId: null, error: null, createdAt: now, updatedAt: now });
     this.repo.event(projectId, 'portrait.started', { jobId: job.id, lookId: look.id, simulated: this.backend.simulated });
-    const archived = this.repo.production.create({ id: `portrait-request:${job.id}`, projectId, kind: 'prompt', label: `${character.name} · ${look.name} 生图请求`, status: 'running', prompt, model: config.model, parameters: config.parameters, content: inputSnapshot, characterId: character.id, lookId: look.id, inputHash: job.inputHash, simulated: this.backend.simulated });
+    const archived = this.repo.production.create({ id: `portrait-request:${job.id}`, projectId, kind: 'prompt', label: `${character.name} · ${look.name} 生图请求`, status: 'running', prompt, dependencies: referenceSnapshot ? [`character:${referenceSnapshot.assetId}`] : [], model: config.model, parameters: config.parameters, content: inputSnapshot, characterId: character.id, lookId: look.id, inputHash: job.inputHash, simulated: this.backend.simulated });
     this.repo.production.recordOutput(projectId, archived.id, join('characters', projectId, 'pending', `${job.id}.image`));
     const task = (async () => {
       let produced = false;
       const directory = join(this.root, 'characters', projectId, 'pending'); const output = join(directory, `${job.id}.image`);
       try {
         await mkdir(directory, { recursive: true });
-        await this.backend.portrait(prompt, output); produced = true;
+        await this.backend.portrait(prompt, output, reference); produced = true;
         const bytes = await readFile(output); const mime = bytes[0] === 255 ? 'image/jpeg' : bytes.toString('ascii', 0, 4) === 'RIFF' ? 'image/webp' : 'image/png';
         const info = await validatePortrait(bytes, mime); const asset = await this.storeImage(projectId, bytes, info, 'generated', inputSnapshot);
         this.repo.characters.updateLook(projectId, input.revision, character.id, look.id, { imageAssetId: asset.id });

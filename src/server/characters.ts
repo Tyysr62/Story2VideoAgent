@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import type { CharacterService } from '../characters/service.js';
+import { portraitRequestSchema, type CharacterService } from '../characters/service.js';
 import { MAX_PORTRAIT_BYTES } from '../characters/images.js';
 import { characterInputSchema, characterPatchSchema, lookInputSchema, lookPatchSchema } from '../domain/characters.js';
 import { AppError } from '../domain/storyboard.js';
@@ -47,7 +47,7 @@ export async function registerCharacters(app: FastifyInstance, service: Characte
   });
   app.post('/api/projects/:id/characters/:characterId/looks/:lookId/portrait', async req => {
     const { id, characterId, lookId } = ids.parse(req.params);
-    const input = version.extend({ requestId: z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/), acceptCost: z.boolean() }).strict().parse(req.body);
+    const input = portraitRequestSchema.omit({ characterId: true, lookId: true }).parse(req.body);
     return service.generate(id, { ...input, characterId: characterId!, lookId: lookId! });
   });
   app.get('/api/projects/:id/character-images/:assetId', async (req, reply) => {

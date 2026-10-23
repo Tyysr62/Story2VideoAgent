@@ -16,7 +16,7 @@ const imageSchema = z.object({
   mime: z.enum(['image/png', 'image/jpeg', 'image/webp']), bytes: z.number().int().positive().max(10 * 1024 * 1024),
   width: z.number().int().positive().max(4096), height: z.number().int().positive().max(4096),
   sha256: z.string().regex(/^[a-f0-9]{64}$/i), source: z.enum(['upload', 'generated']), simulated: z.boolean(), createdAt: z.string().min(1),
-  generation: z.object({ model: z.string().max(300), parameters: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])), prompt: z.string().max(12000), identityDescription: z.string().max(2000), lookDescription: z.string().max(2000), style: z.string().max(2000) }).optional(),
+  generation: z.object({ model: z.string().max(300), parameters: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])), prompt: z.string().max(12000), identityDescription: z.string().max(2000), lookDescription: z.string().max(2000), style: z.string().max(2000), editInstruction: z.string().max(2000).optional(), reference: z.object({ characterId: z.string(), lookId: z.string(), lookVersionId: z.string(), assetId: z.string(), sha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict().optional() }).optional(),
 }).strict();
 
 /** Uses Repository's connection. Public mutations are synchronous and transactionally CAS-protected. */
@@ -235,7 +235,7 @@ export class CharacterStore {
   }
   images(projectId: string): ImageAsset[] { this.project(projectId); return this.db.prepare('SELECT payload FROM character_images WHERE project_id=? ORDER BY rowid').all(projectId).map(r => JSON.parse(String(r.payload))); }
   archiveImage(asset: ImageAsset) {
-    return this.production?.ensure({ id: `character:${asset.id}`, projectId: asset.projectId, kind: asset.source === 'upload' ? 'upload' : 'portrait', label: asset.source === 'upload' ? '上传角色参考图' : '生成角色候选图', status: 'succeeded', file: { path: asset.path, mime: asset.mime, bytes: asset.bytes, sha256: asset.sha256 }, prompt: asset.generation?.prompt, model: asset.generation?.model, parameters: asset.generation?.parameters, content: asset.generation, simulated: asset.simulated, createdAt: asset.createdAt });
+    return this.production?.ensure({ id: `character:${asset.id}`, projectId: asset.projectId, kind: asset.source === 'upload' ? 'upload' : 'portrait', label: asset.source === 'upload' ? '上传角色参考图' : '生成角色候选图', status: 'succeeded', dependencies: asset.generation?.reference ? [`character:${asset.generation.reference.assetId}`] : [], file: { path: asset.path, mime: asset.mime, bytes: asset.bytes, sha256: asset.sha256 }, prompt: asset.generation?.prompt, model: asset.generation?.model, parameters: asset.generation?.parameters, content: asset.generation, simulated: asset.simulated, createdAt: asset.createdAt });
   }
   getImageAsset(projectId: string, id: string): ImageAsset {
     this.project(projectId);

@@ -2,7 +2,12 @@ import { z } from 'zod';
 import { AppError } from './storyboard.js';
 
 export interface CharacterRef { characterId: string; lookId: string; lookVersionId: string; }
-export interface GenerationSnapshot { model: string; parameters: Record<string, string | number | boolean>; prompt: string; identityDescription: string; lookDescription: string; style: string; }
+export interface GenerationSnapshot {
+  model: string; parameters: Record<string, string | number | boolean>; prompt: string;
+  identityDescription: string; lookDescription: string; style: string;
+  editInstruction?: string;
+  reference?: CharacterRef & { assetId: string; sha256: string };
+}
 export interface LookVersion {
   readonly id: string; readonly description: string; readonly imageAssetId: string | null; readonly createdAt: string;
   readonly identityDescription?: string; readonly identityHash?: string; readonly style?: string;
