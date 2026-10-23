@@ -28,9 +28,17 @@ test('studio completes edit → version approval → actual playable composition
   await expect.poll(() => video.evaluate(el => (el as HTMLVideoElement).currentTime)).toBeGreaterThan(0.1);
   await video.evaluate(el => (el as HTMLVideoElement).pause());
   await expect(page.getByRole('button', { name: '已生成成片', exact: true })).toBeDisabled();
+  const log = page.locator('.event-log'); await log.locator('summary').click();
+  await expect(log).toContainText('成片已完成，可预览或下载');
+  await expect(log).toContainText('成片拼接已完成');
+  await expect(log).toContainText('镜头视频已生成');
+  await expect(log).not.toContainText('job.succeeded');
+  await expect(log).not.toContainText('project.ready');
   await page.screenshot({ path: 'docs/screenshots/v1-studio.png', fullPage: true });
   await page.reload(); await page.getByRole('button', { name: /月光邮局/ }).first().click();
   await expect(page.getByLabel('成片预览', { exact: true })).toBeVisible();
+  await page.locator('.event-log summary').click();
+  await expect(page.locator('.event-log')).toContainText('成片已完成，可预览或下载');
   expect(errors).toEqual([]);
 });
 

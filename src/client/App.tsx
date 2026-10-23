@@ -5,6 +5,7 @@ import type { PortraitJob } from '../storage/portrait-jobs.js';
 import { Characters } from './Characters.js';
 import { CharacterReferences } from './CharacterReferences.js';
 import { api } from './api.js';
+import { describeEvent } from './event-labels.js';
 
 type Asset = Omit<Artifact, 'path'> & { url: string };
 type Detail = { project: Project; jobs: Job[]; artifacts: Asset[]; events: ProjectEvent[]; characterLibrary?: CharacterLibrary; portraitJobs?: PortraitJob[] };
@@ -105,7 +106,7 @@ export function App() {
           </>}
           {currentJobs.length > 0 && <section className="panel progress-panel"><div className="section-row"><h2>执行进度</h2><span>{completed} / {currentJobs.length} 任务完成</span></div><progress value={completed} max={currentJobs.length}/><p className="muted">已完成素材自动复用。提交状态不明时会暂停，避免重复计费。</p></section>}
           {final && <section className="panel final-panel"><div className="section-row"><h2>成片预览</h2><a className="download" href={`${final.url}?download=1`}>下载 MP4 ↓</a></div><video controls preload="metadata" src={final.url} aria-label="成片预览"/><p className="muted">{final.simulated ? '测试素材合成 · 非真实 AI 成片' : '云端视频生成 · FFmpeg 本地合成 · V1 静音输出'}</p></section>}
-          {!!detail?.events.length && <details className="event-log"><summary>执行记录 · {detail.events.length}</summary>{detail.events.slice(-20).reverse().map(e => <div key={e.id}><time>{new Date(e.createdAt).toLocaleTimeString()}</time><code>{e.type}</code></div>)}</details>}
+          {!!detail?.events.length && <details className="event-log"><summary>执行记录 · {detail.events.length}</summary>{detail.events.slice(-20).reverse().map(e => <div key={e.id}><time dateTime={e.createdAt}>{new Date(e.createdAt).toLocaleTimeString('zh-CN', { hour12: false })}</time><span>{describeEvent(e, { jobs: detail.jobs, portraitJobs: detail.portraitJobs, characterLibrary: library, storyboard: project.storyboard })}</span></div>)}</details>}
         </>}
         <footer><span>STORY AGENT / {v2 ? 'V2 · M1' : 'V1'}</span><span>{config?.simulated ? 'OFFLINE FIXTURES' : `${config?.videoModel || '…'} · ${config?.resolution || '…'}`}</span></footer>
       </div>

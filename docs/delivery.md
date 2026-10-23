@@ -62,3 +62,9 @@ Final verification in the original `story-agent` checkout after local fast-forwa
 The normal local server was started with `npm start` at `http://127.0.0.1:4310`. Read-only health/config checks confirmed `ok`, official DeepSeek routing, both credentials configured, character library enabled, real mode and the existing project preserved. No real paid image/video generation was requested during M1 acceptance; cloud responses were test fixtures. Real candidate quality and account/provider compatibility remain unmeasured until an explicitly initiated image request. No GitHub push or remote CI run was performed. Staged files passed actual-local-key and private-path scans.
 
 Detailed boundaries and red/green history: [V2 M1 delivery](v2-m1-delivery.md). M2/M3 remain subsequent modules; M1 does not claim reference-controlled video or automated visual consistency gains.
+
+## 执行记录中文化 — 2026-10-23
+
+页面统一将内部事件名转为中文进展说明，覆盖项目、分镜规划与保存、角色定稿、候选图、镜头素材和成片拼接。可解析时显示角色／造型名称、镜头标题和分镜版本。候选图提交未知与明确失败分开说明；未知事件使用中文兜底，不展示原始上游 payload。历史记录读取时翻译，无需迁移数据库。时间采用中文 24 小时制。
+
+验证：浏览器断言先在旧页面失败；更新后类型检查、生产构建和全部 8 项 Edge 浏览器测试通过，覆盖中文候选图、中文成片步骤和刷新后的历史记录。另验证缺少历史关联数据、提交未知和未知事件的安全兜底。未调用付费 API；只保留本地提交。

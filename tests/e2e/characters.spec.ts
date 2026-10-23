@@ -66,6 +66,11 @@ test('V2 generated portrait is explicitly a fixture in demo and supports adding 
   await look.getByLabel('我确认本次生图费用').check(); await look.getByRole('button', { name: '生成角色候选图', exact: true }).click();
   await expect(look.getByAltText('小狐狸 老年 主参考图')).toBeVisible();
   await expect(look.getByText('测试候选图 · 非真实 AI', { exact: true })).toBeVisible();
+  const log = page.locator('.event-log'); await log.locator('summary').click();
+  await expect(log).toContainText('分镜已保存（第 1 版，共 3 个镜头）');
+  await expect(log).toContainText('角色候选图已生成：小狐狸 · 老年');
+  await expect(log).not.toContainText('portrait.succeeded');
+  await expect(log).not.toContainText('storyboard.updated');
   await page.setViewportSize({ width: 390, height: 844 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
   await page.screenshot({ path: 'test-results/v2-characters-mobile.png', fullPage: true });
