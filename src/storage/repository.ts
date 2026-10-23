@@ -4,6 +4,7 @@ import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { CharacterStore } from './characters.js';
 import { PortraitJobs } from './portrait-jobs.js';
+import { ProductionStore } from '../production/store.js';
 import { AppError, validateStoryboard, type Project, type Job, type Artifact, type ProjectEvent } from '../domain/storyboard.js';
 
 const stamp = () => new Date().toISOString();
@@ -11,12 +12,14 @@ export class Repository {
   private db: DatabaseSync;
   readonly characters: CharacterStore;
   readonly portraits: PortraitJobs;
+  readonly production: ProductionStore;
   constructor(path: string) {
     const existed = path !== ':memory:' && existsSync(path);
     mkdirSync(dirname(path), { recursive: true }); this.db = new DatabaseSync(path);
     const migrated = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='character_libraries'").get();
     // VACUUM INTO includes committed WAL state and never copies a partial live DB file.
-    if (existed && !migrated) {
+    const hasProduction = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='production_entries'").get();
+    if (existed && (!migrated || !hasProduction)) {
       const backup = `${path}.backup-${Date.now()}-${randomUUID()}`;
       try { this.db.exec(`VACUUM INTO '${backup.replaceAll("'", "''")}'`); }
       catch (error) { this.db.close(); throw error; }
@@ -28,8 +31,16 @@ export class Repository {
       CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT NOT NULL, type TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS character_libraries(project_id TEXT PRIMARY KEY, payload TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS character_images(id TEXT PRIMARY KEY, project_id TEXT NOT NULL, payload TEXT NOT NULL);`);
-    this.characters = new CharacterStore(this.db, id => this.getProject(id));
+    this.production = new ProductionStore(this.db, id => this.getProject(id));
+    this.characters = new CharacterStore(this.db, id => this.getProject(id), this.production);
     this.portraits = new PortraitJobs(this.db);
+    for (const p of this.listProjects()) {
+      this.production.archiveBoard(p, true);
+      const archivedPaths = new Set(this.production.list(p.id).flatMap(e => e.file ? [e.file.path] : []));
+      for (const asset of this.artifacts(p.id)) if (!archivedPaths.has(asset.path)) this.production.ensure({ id: `legacy:${asset.id}`, projectId: p.id, kind: asset.kind, label: `历史${asset.kind === 'image' ? '图片' : asset.kind === 'video' ? '视频' : '成片'}`, status: 'succeeded', revision: asset.revision, shotId: asset.shotId ?? undefined, file: { path: asset.path, mime: asset.mime, bytes: asset.bytes, sha256: asset.sha256 }, simulated: asset.simulated, createdAt: asset.createdAt, legacy: true });
+      for (const asset of this.characters.images(p.id)) this.characters.archiveImage(asset);
+      for (const job of this.portraits.list(p.id)) this.production.ensure({ id: `portrait-request:${job.id}`, projectId: p.id, kind: 'prompt', label: '角色生图请求', status: job.status, prompt: job.inputSnapshot?.prompt, model: job.inputSnapshot?.model, parameters: job.inputSnapshot?.parameters, content: job.inputSnapshot, characterId: job.characterId, lookId: job.lookId, outputId: job.assetId ? `character:${job.assetId}` : undefined, error: job.error ?? undefined, createdAt: job.createdAt, legacy: true });
+    }
   }
   close() { this.db.close(); }
   private read<T>(row: unknown): T { return JSON.parse((row as { payload: string }).payload) as T; }
@@ -39,7 +50,7 @@ export class Repository {
     if (!story.trim() || story.length > 20000) throw new AppError(400, '故事需要 1–20000 个字符');
     if (workflowVersion !== undefined && workflowVersion !== 2) throw new AppError(400, '不支持的工作流版本');
     const now = stamp(); const p: Project = { ...(workflowVersion === 2 ? { workflowVersion } : {}), id: randomUUID(), story: story.trim(), revision: 0, storyboard: null, status: 'draft', approvedRevision: null, finalArtifactId: null, error: null, createdAt: now, updatedAt: now };
-    this.transaction(() => { this.db.prepare('INSERT INTO projects VALUES(?,?)').run(p.id, JSON.stringify(p)); this.event(p.id, 'project.created', {}); }); return p;
+    this.transaction(() => { this.db.prepare('INSERT INTO projects VALUES(?,?)').run(p.id, JSON.stringify(p)); this.production.archiveBoard(p); this.event(p.id, 'project.created', {}); }); return p;
   }
   listProjects(): Project[] { return this.db.prepare('SELECT payload FROM projects ORDER BY rowid DESC').all().map(r => this.read<Project>(r)); }
   getProject(id: string): Project { const row = this.db.prepare('SELECT payload FROM projects WHERE id=?').get(id); if (!row) throw new AppError(404, '项目不存在'); return this.read(row); }
@@ -57,7 +68,7 @@ export class Repository {
         if (p.storyboard?.style !== storyboard.style) this.characters.invalidateApproval(id);
       }
       Object.assign(p, { storyboard, revision: p.revision + 1, approvedRevision: null, finalArtifactId: null, error: null, status: 'awaiting_approval' });
-      this.putProject(p); this.event(id, 'storyboard.updated', { revision: p.revision, shots: storyboard.shots.length }); return p;
+      this.putProject(p); this.production.archiveBoard(p); this.event(id, 'storyboard.updated', { revision: p.revision, shots: storyboard.shots.length }); return p;
     });
   }
   enableV2(id: string, revision: number): Project {

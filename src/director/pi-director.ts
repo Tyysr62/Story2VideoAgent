@@ -5,7 +5,8 @@ import { AppError, validateStoryboard, type Storyboard } from '../domain/storybo
 import { validateCharacterRef, type CharacterLibrary } from '../domain/characters.js';
 
 export type DirectorStream = ModelRuntime['streamSimple'];
-export interface Planner { plan(story: string, signal?: AbortSignal, registered?: CharacterLibrary): Promise<Storyboard>; }
+export interface PlannerTrace { model: string; systemPrompt: string; userPrompt: string; }
+export interface Planner { plan(story: string, signal?: AbortSignal, registered?: CharacterLibrary, trace?: (input: PlannerTrace) => void): Promise<Storyboard>; }
 interface Options { apiKey: string; model?: string; baseUrl?: string; stream?: DirectorStream; timeoutMs?: number; allowedDurations?: number[]; fetcher?: typeof fetch; }
 // Verified on 2026-10-22 against DeepSeek Vision docs and the OpenRouter model page.
 // Keep unverified/custom models conservative instead of enabling image input globally.
@@ -35,7 +36,7 @@ function providerError(reason: string): AppError {
 
 export class PiDirector implements Planner {
   constructor(private options: Options) {}
-  async plan(story: string, signal?: AbortSignal, registered?: CharacterLibrary): Promise<Storyboard> {
+  async plan(story: string, signal?: AbortSignal, registered?: CharacterLibrary, trace?: (input: PlannerTrace) => void): Promise<Storyboard> {
     if (signal?.aborted) throw new AppError(499, '分镜规划已取消');
     if (!this.options.apiKey.trim()) throw new AppError(503, '请先在 .env.local 配置 OPENROUTER_API_KEY（或 DEEPSEEK_API_KEY）');
     const endpoint = new URL(this.options.baseUrl || 'https://api.deepseek.com');
@@ -85,7 +86,9 @@ export class PiDirector implements Planner {
     signal?.addEventListener('abort', cancel, { once: true });
     try {
       if (signal?.aborted) throw new AppError(499, '分镜规划已取消');
-      await session.prompt(`请为下列故事规划短片，中文输出：\n<story>\n${story}\n</story>`);
+      const userPrompt = `请为下列故事规划短片，中文输出：\n<story>\n${story}\n</story>`;
+      trace?.({ model: modelId, systemPrompt: loader.getSystemPrompt() ?? '', userPrompt });
+      await session.prompt(userPrompt);
       if (timedOut) throw new AppError(504, '分镜规划超时，请稍后重试');
       if (signal?.aborted) throw new AppError(499, '分镜规划已取消');
       if (!result) {

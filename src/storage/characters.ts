@@ -2,6 +2,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { AppError, type Project, type Storyboard } from '../domain/storyboard.js';
+import type { ProductionStore } from '../production/store.js';
 import {
   characterInputSchema, characterPatchSchema, lookInputSchema, lookPatchSchema,
   normalizeLabel, referenceKey, resolveCharacterReferences, validateCharacterRef, validateLibraryLabels,
@@ -20,7 +21,7 @@ const imageSchema = z.object({
 
 /** Uses Repository's connection. Public mutations are synchronous and transactionally CAS-protected. */
 export class CharacterStore {
-  constructor(private db: DatabaseSync, private project: (id: string) => Project) {}
+  constructor(private db: DatabaseSync, private project: (id: string) => Project, private production?: ProductionStore) {}
   private transaction<T>(fn: () => T): T {
     this.db.exec('BEGIN IMMEDIATE');
     try { const result = fn(); this.db.exec('COMMIT'); return result; }
@@ -222,7 +223,12 @@ export class CharacterStore {
     this.editable(input.projectId);
     const asset = imageSchema.parse({ ...input, id: input.id ?? randomUUID(), createdAt: input.createdAt ?? stamp() });
     this.db.prepare('INSERT INTO character_images(id,project_id,payload) VALUES(?,?,?)').run(asset.id, asset.projectId, JSON.stringify(asset));
+    this.archiveImage(asset);
     return asset;
+  }
+  images(projectId: string): ImageAsset[] { this.project(projectId); return this.db.prepare('SELECT payload FROM character_images WHERE project_id=? ORDER BY rowid').all(projectId).map(r => JSON.parse(String(r.payload))); }
+  archiveImage(asset: ImageAsset) {
+    return this.production?.ensure({ id: `character:${asset.id}`, projectId: asset.projectId, kind: asset.source === 'upload' ? 'upload' : 'portrait', label: asset.source === 'upload' ? '上传角色参考图' : '生成角色候选图', status: 'succeeded', file: { path: asset.path, mime: asset.mime, bytes: asset.bytes, sha256: asset.sha256 }, prompt: asset.generation?.prompt, model: asset.generation?.model, parameters: asset.generation?.parameters, content: asset.generation, simulated: asset.simulated, createdAt: asset.createdAt });
   }
   getImageAsset(projectId: string, id: string): ImageAsset {
     this.project(projectId);

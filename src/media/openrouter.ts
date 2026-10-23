@@ -85,6 +85,7 @@ export class OpenRouterMedia implements MediaBackend {
   }
   async portrait(prompt: string, output: string) { return this.generateImage(prompt, output, '1:1'); }
   portraitConfig() { return { model: this.imageModel, parameters: { resolution: this.options.imageResolution || DEFAULT_IMAGE_RESOLUTION, aspect_ratio: '1:1', n: 1 } }; }
+  generationConfig(kind: 'image' | 'video' | 'compose') { return kind === 'image' ? { model: this.imageModel, parameters: { resolution: this.options.imageResolution || DEFAULT_IMAGE_RESOLUTION, aspect_ratio: '16:9', n: 1 } } : kind === 'video' ? { model: this.videoModel, parameters: { resolution: this.resolution, aspect_ratio: '16:9', generate_audio: false } } : { model: 'ffmpeg', parameters: { width: 1280, height: 720, fps: 24 } }; }
   async estimatePortrait() {
     const endpoint = await this.json(`/images/models/${this.imageModel}/endpoints`);
     const prices = (endpoint.endpoints ?? []).flatMap((e: any) => e.pricing ?? []).filter((p: any) => p.billable === 'output_image' && p.unit === 'image' && (!p.variant || p.variant === (this.options.imageResolution || DEFAULT_IMAGE_RESOLUTION).toLowerCase())).map((p: any) => Number(p.cost_usd)).filter(Number.isFinite);

@@ -64,20 +64,25 @@ export class CharacterService {
     const job = this.jobs.create({ id: input.requestId, projectId, characterId: character.id, lookId: look.id, lookVersionId: version.id, libraryRevision: input.revision,
       inputHash: createHash('sha256').update(JSON.stringify({ ...inputSnapshot, lookVersionId: version.id })).digest('hex'), inputSnapshot, status: 'running', assetId: null, error: null, createdAt: now, updatedAt: now });
     this.repo.event(projectId, 'portrait.started', { jobId: job.id, lookId: look.id, simulated: this.backend.simulated });
+    const archived = this.repo.production.create({ id: `portrait-request:${job.id}`, projectId, kind: 'prompt', label: `${character.name} · ${look.name} 生图请求`, status: 'running', prompt, model: config.model, parameters: config.parameters, content: inputSnapshot, characterId: character.id, lookId: look.id, inputHash: job.inputHash, simulated: this.backend.simulated });
     const task = (async () => {
       let produced = false;
+      const directory = join(this.root, 'characters', projectId, 'pending'); const output = join(directory, `${job.id}.image`);
       try {
-        const directory = join(this.root, 'characters', projectId, 'pending'); await mkdir(directory, { recursive: true });
-        const output = join(directory, `${job.id}.image`); await this.backend.portrait(prompt, output); produced = true;
+        await mkdir(directory, { recursive: true });
+        await this.backend.portrait(prompt, output); produced = true;
         const bytes = await readFile(output); const mime = bytes[0] === 255 ? 'image/jpeg' : bytes.toString('ascii', 0, 4) === 'RIFF' ? 'image/webp' : 'image/png';
         const info = await validatePortrait(bytes, mime); const asset = await this.storeImage(projectId, bytes, info, 'generated', inputSnapshot);
         this.repo.characters.updateLook(projectId, input.revision, character.id, look.id, { imageAssetId: asset.id });
         this.repo.event(projectId, 'portrait.succeeded', { jobId: job.id, assetId: asset.id });
+        this.repo.production.update(projectId, archived.id, { status: 'succeeded', outputId: `character:${asset.id}` });
         return this.jobs.update(projectId, job.id, { status: 'succeeded', assetId: asset.id, error: null });
       } catch (error) {
         const unknown = error instanceof UncertainSubmission || (!this.backend.simulated && produced);
         const message = unknown ? '云端提交状态未知或已生成但未完整保存，请核实费用后处理，禁止自动重提' : error instanceof AppError ? error.message : '角色图片生成失败，请检查模型配置';
         this.repo.event(projectId, 'portrait.failed', { jobId: job.id, unknown });
+        const partial = await readFile(output).catch(() => null);
+        this.repo.production.update(projectId, archived.id, { status: unknown ? 'unknown' : 'failed', error: message, ...(partial?.length ? { file: { path: relative(this.root, output), mime: 'application/octet-stream', bytes: partial.length, sha256: createHash('sha256').update(partial).digest('hex') } } : {}) });
         return this.jobs.update(projectId, job.id, { status: unknown ? 'unknown' : 'failed', assetId: null, error: message });
       }
     })();
@@ -86,6 +91,8 @@ export class CharacterService {
   async recover() {
     for (const p of this.repo.listProjects()) for (const job of this.jobs.list(p.id)) if (job.status === 'running') {
       this.jobs.update(p.id, job.id, { status: 'unknown', assetId: job.assetId, error: '角色生成被中断，未确认云端状态，禁止自动重提' });
+      this.repo.production.ensure({ id: `portrait-request:${job.id}`, projectId: p.id, kind: 'prompt', label: '角色生图请求', status: 'running', prompt: job.inputSnapshot?.prompt, model: job.inputSnapshot?.model, parameters: job.inputSnapshot?.parameters, content: job.inputSnapshot });
+      this.repo.production.update(p.id, `portrait-request:${job.id}`, { status: 'unknown', error: '角色生成被中断，禁止自动重提' });
     }
   }
   async idle() { await Promise.all([...this.active]); }

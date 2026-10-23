@@ -8,7 +8,7 @@ import type { Planner } from '../director/pi-director.js';
 import type { Composer, MediaBackend } from '../media/ffmpeg.js';
 import { UncertainSubmission, ProviderFailed } from '../media/openrouter.js';
 
-type Backend = MediaBackend & { validate?(board: Storyboard): Promise<void>; estimate?(board: Storyboard): Promise<unknown>; };
+type Backend = MediaBackend & { validate?(board: Storyboard): Promise<void>; estimate?(board: Storyboard): Promise<unknown>; generationConfig?(kind: Job['kind']): { model: string; parameters: Record<string, unknown> }; };
 export class Workflow {
   private active = new Map<string, Promise<void>>();
   constructor(readonly repo: Repository, private planner: Planner, readonly media: Backend, private composer: Composer, readonly root: string) {}
@@ -16,11 +16,14 @@ export class Workflow {
     const p = this.repo.getProject(id); this.repo.assertRevision(p, revision);
     if (['generating', 'planning'].includes(p.status)) throw new AppError(409, '项目正在处理，请等待当前任务完成');
     this.repo.updateProject(id, { status: 'planning', approvedRevision: null, error: null }); this.repo.event(id, 'planning.started', { revision });
-    try { const board = await this.planner.plan(p.story, undefined, p.workflowVersion === 2 ? this.repo.characters.snapshot(id) : undefined); return this.repo.saveStoryboard(id, revision, board, true); }
+    const planning = this.repo.production.create({ projectId: id, kind: 'prompt', label: 'AI 分镜规划输入', status: 'running', prompt: p.story, revision, content: { characterLibrary: p.workflowVersion === 2 ? this.repo.characters.snapshot(id) : undefined } });
+    let traceId: string | undefined;
+    try { const board = await this.planner.plan(p.story, undefined, p.workflowVersion === 2 ? this.repo.characters.snapshot(id) : undefined, trace => { traceId = this.repo.production.create({ projectId: id, kind: 'prompt', label: '导演实际请求 Prompt', status: 'running', revision, model: trace.model, prompt: trace.userPrompt, content: { systemPrompt: trace.systemPrompt }, dependencies: [planning.id] }).id; }); const saved = this.repo.saveStoryboard(id, revision, board, true); this.repo.production.update(id, planning.id, { status: 'succeeded', outputId: `board:${id}:r${saved.revision}` }); if (traceId) this.repo.production.update(id, traceId, { status: 'succeeded', outputId: `board:${id}:r${saved.revision}` }); return saved; }
     catch (e) {
       const message = e instanceof AppError ? e.message : '分镜规划失败，请重试';
       const current = this.repo.getProject(id);
       if (current.revision === revision && current.status === 'planning') this.repo.updateProject(id, { status: 'failed', error: message });
+      this.repo.production.update(id, planning.id, { status: 'failed', error: message }); if (traceId) this.repo.production.update(id, traceId, { status: 'failed', error: message });
       this.repo.event(id, 'planning.failed', { revision, message }); throw e instanceof AppError ? e : new AppError(502, message);
     }
   }
@@ -52,7 +55,7 @@ export class Workflow {
   async idle(id?: string) { if (id) await this.active.get(id); else await Promise.all([...this.active.values()]); }
   async recover() {
     for (const p of this.repo.listProjects()) {
-      if (p.status === 'planning') { this.repo.updateProject(p.id, { status: 'failed', error: '分镜规划被中断，请重新发起规划' }); continue; }
+      if (p.status === 'planning') { this.repo.updateProject(p.id, { status: 'failed', error: '分镜规划被中断，请重新发起规划' }); for (const e of this.repo.production.list(p.id).filter(e => e.kind === 'prompt' && e.status === 'running')) this.repo.production.update(p.id, e.id, { status: 'failed', error: '分镜规划被中断' }); continue; }
       if (p.status !== 'generating') continue;
       for (const j of this.repo.jobs(p.id).filter(j => j.revision === p.revision && j.status === 'running')) {
         const uncertain = !this.media.simulated && j.kind !== 'compose' && !j.providerTaskId;
@@ -85,18 +88,23 @@ export class Workflow {
     if (job.status === 'unknown') throw new UncertainSubmission();
     const resumingVideo = job.kind === 'video' && Boolean(job.providerTaskId);
     if (job.attempts >= 3 && !resumingVideo) throw new AppError(409, '该任务已达到3次尝试上限，请检查失败原因');
-    const path = join(this.root, 'artifacts', job.projectId, `r${job.revision}`, `${job.id}.${job.kind === 'image' ? 'image' : 'mp4'}`);
+    const path = join(this.root, 'artifacts', job.projectId, `r${job.revision}`, `${job.id}-a${job.attempts + 1}.${job.kind === 'image' ? 'image' : 'mp4'}`);
     await mkdir(join(this.root, 'artifacts', job.projectId, `r${job.revision}`), { recursive: true });
     this.repo.updateJob(job.id, { status: 'running', attempts: job.attempts + 1, error: null }); this.repo.event(job.projectId, 'job.started', { jobId: job.id, kind: job.kind, shotId: job.shotId });
+    const shot = this.repo.getProject(job.projectId).storyboard?.shots.find(s => s.id === job.shotId);
+    const config = this.media.generationConfig?.(job.kind);
+    const archived = this.repo.production.create({ projectId: job.projectId, kind: job.kind, label: job.kind === 'compose' ? '成片拼接' : `${shot?.title ?? '镜头'} · ${job.kind === 'image' ? '预览图' : '视频'}`, status: 'running', revision: job.revision, shotId: job.shotId ?? undefined, prompt: job.kind === 'image' ? shot?.imagePrompt : job.kind === 'video' ? shot?.videoPrompt : undefined, content: shot, simulated: this.media.simulated, model: config?.model, parameters: { ...config?.parameters, ...(job.kind === 'video' && shot ? { duration: shot.duration } : {}) } });
     let produced = false;
     try {
       await fn(path); produced = true; const info = await stat(path); if (!info.size) throw new Error('Empty media file');
       const bytes = await readFile(path); const imageMime = bytes[0] === 0xff ? 'image/jpeg' : bytes.subarray(0, 4).toString() === 'RIFF' ? 'image/webp' : 'image/png';
       const a: Artifact = { id: job.id, projectId: job.projectId, revision: job.revision, shotId: job.shotId, kind: job.kind, path: relative(this.root, path), mime: job.kind === 'image' ? imageMime : 'video/mp4', bytes: info.size,
         sha256: createHash('sha256').update(bytes).digest('hex'), simulated: this.media.simulated, createdAt: new Date().toISOString() };
+      this.repo.production.update(job.projectId, archived.id, { status: 'succeeded', file: { path: a.path, bytes: a.bytes, mime: a.mime, sha256: a.sha256 }, outputId: a.id });
       this.repo.saveArtifact(a); this.repo.updateJob(job.id, { status: 'succeeded', artifactId: a.id }); this.repo.event(job.projectId, 'job.succeeded', { jobId: job.id, artifactId: a.id }); return path;
     } catch (e) {
       const failure = !this.media.simulated && job.kind === 'image' && produced ? new UncertainSubmission() : e;
+      this.repo.production.update(job.projectId, archived.id, { status: failure instanceof UncertainSubmission ? 'unknown' : 'failed', error: failure instanceof AppError ? failure.message : '媒体任务失败' });
       this.repo.updateJob(job.id, { status: failure instanceof UncertainSubmission ? 'unknown' : 'failed', error: failure instanceof AppError ? failure.message : '媒体任务失败', ...(failure instanceof ProviderFailed ? { providerTaskId: undefined } : {}) }); throw failure;
     }
   }
