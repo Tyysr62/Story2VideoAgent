@@ -9,11 +9,12 @@ export interface ProductionEntry {
   status: 'running' | 'succeeded' | 'failed' | 'unknown'; prompt: string | null;
   model?: string; parameters: Record<string, unknown>; dependencies: string[];
   revision?: number; shotId?: string; characterId?: string; lookId?: string; inputHash?: string;
-  content?: unknown; file?: ProductionFile; outputId?: string; providerTaskId?: string; error?: string;
+  content?: unknown; file?: ProductionFile; outputId?: string; providerTaskId?: string; providerTerminal?: boolean; error?: string;
+  outputPaths?: string[];
   simulated?: boolean; legacy?: boolean; createdAt: string; updatedAt: string;
 }
 type Input = Omit<ProductionEntry, 'id' | 'createdAt' | 'updatedAt' | 'prompt' | 'parameters' | 'dependencies'> & { id?: string; createdAt?: string; prompt?: string | null; parameters?: Record<string, unknown>; dependencies?: string[] };
-type Result = Partial<Pick<ProductionEntry, 'status' | 'file' | 'outputId' | 'providerTaskId' | 'error'>>;
+type Result = Partial<Pick<ProductionEntry, 'status' | 'file' | 'outputId' | 'providerTaskId' | 'providerTerminal' | 'error'>>;
 export class ProductionStore {
   constructor(private db: DatabaseSync, private project: (id: string) => Project) {
     db.exec('CREATE TABLE IF NOT EXISTS production_entries(id TEXT PRIMARY KEY, project_id TEXT NOT NULL, payload TEXT NOT NULL); CREATE INDEX IF NOT EXISTS production_project ON production_entries(project_id)');
@@ -35,8 +36,12 @@ export class ProductionStore {
   }
   update(projectId: string, id: string, result: Result) {
     const entry = this.get(projectId, id);
-    for (const key of ['status', 'file', 'outputId', 'providerTaskId', 'error'] as const) if (Object.hasOwn(result, key)) (entry as any)[key] = result[key];
+    for (const key of ['status', 'file', 'outputId', 'providerTaskId', 'providerTerminal', 'error'] as const) if (Object.hasOwn(result, key)) (entry as any)[key] = result[key];
     entry.updatedAt = new Date().toISOString(); this.db.prepare('UPDATE production_entries SET payload=? WHERE id=? AND project_id=?').run(JSON.stringify(entry), id, projectId); return entry;
+  }
+  recordOutput(projectId: string, id: string, path: string) {
+    const entry = this.get(projectId, id); entry.outputPaths = [...new Set([...(entry.outputPaths ?? []), path])];
+    this.db.prepare('UPDATE production_entries SET payload=? WHERE id=? AND project_id=?').run(JSON.stringify(entry), id, projectId);
   }
   archiveBoard(project: Project, legacy = false) {
     this.ensure({ id: `story:${project.id}`, projectId: project.id, kind: 'prompt', label: '故事原文', status: 'succeeded', prompt: project.story, createdAt: project.createdAt });

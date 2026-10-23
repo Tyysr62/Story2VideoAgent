@@ -65,6 +65,7 @@ export class CharacterService {
       inputHash: createHash('sha256').update(JSON.stringify({ ...inputSnapshot, lookVersionId: version.id })).digest('hex'), inputSnapshot, status: 'running', assetId: null, error: null, createdAt: now, updatedAt: now });
     this.repo.event(projectId, 'portrait.started', { jobId: job.id, lookId: look.id, simulated: this.backend.simulated });
     const archived = this.repo.production.create({ id: `portrait-request:${job.id}`, projectId, kind: 'prompt', label: `${character.name} · ${look.name} 生图请求`, status: 'running', prompt, model: config.model, parameters: config.parameters, content: inputSnapshot, characterId: character.id, lookId: look.id, inputHash: job.inputHash, simulated: this.backend.simulated });
+    this.repo.production.recordOutput(projectId, archived.id, join('characters', projectId, 'pending', `${job.id}.image`));
     const task = (async () => {
       let produced = false;
       const directory = join(this.root, 'characters', projectId, 'pending'); const output = join(directory, `${job.id}.image`);

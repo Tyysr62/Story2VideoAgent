@@ -12,7 +12,7 @@ export const DEFAULT_IMAGE_RESOLUTION = '1K';
 export class UncertainSubmission extends AppError { readonly uncertain = true; constructor() { super(409, '云端提交状态未知，已阻止自动重复提交；请先到 OpenRouter 核实，避免重复扣费'); } }
 export class ProviderFailed extends AppError { readonly terminal = true; constructor() { super(502, 'OpenRouter 已确认生成失败，可确认后重新尝试'); } }
 interface Options { apiKey: string; videoModel?: string; imageModel?: string; resolution?: string; imageResolution?: string; baseUrl?: string; fetcher?: typeof fetch; pollMs?: number; maxPolls?: number; diagnosticRoot?: string; }
-interface Capabilities { id: string; supported_durations: number[]; supported_resolutions: string[]; supported_aspect_ratios: string[]; pricing_skus: Record<string, string>; }
+interface Capabilities { id: string; supported_durations: number[]; supported_resolutions: string[]; supported_aspect_ratios: string[]; supported_frame_images?: string[]; pricing_skus: Record<string, string>; }
 
 export class OpenRouterMedia implements MediaBackend {
   readonly simulated = false;
@@ -67,6 +67,11 @@ export class OpenRouterMedia implements MediaBackend {
     if (!cap.supported_resolutions?.includes(this.resolution)) throw new AppError(400, '模型不支持当前分辨率');
     if (!cap.supported_aspect_ratios?.includes('16:9')) throw new AppError(400, '模型不支持16:9画幅');
     if (board.shots.some(s => !cap.supported_durations?.includes(s.duration))) throw new AppError(400, `镜头时长不受支持，请使用 ${cap.supported_durations.join('/')} 秒`);
+  }
+  async validateImageToVideo(board: Storyboard) { await this.validate(board); if (!(await this.capabilities()).supported_frame_images?.includes('first_frame')) throw new AppError(400, '当前视频模型不支持 first_frame，未提交视频费用'); }
+  async estimateImageToVideo(board: Storyboard) {
+    const cap = await this.capabilities(); const sku = cap.pricing_skus ?? {}; const rate = Number(sku[`reference_duration_seconds_${this.resolution.toLowerCase()}`] ?? sku.reference_duration_seconds); const input = Number(sku.reference_input_images);
+    return { videoUsd: Number.isFinite(rate) && rate >= 0 && Number.isFinite(input) && input >= 0 ? board.shots.reduce((n, s) => n + s.duration * rate + input, 0) : null, note: '根据参考输入计费项估算，供应商未给出对应计费项时显示未知' };
   }
   async estimate(board: Storyboard) {
     const cap = await this.capabilities(); const sku = cap.pricing_skus ?? {};
@@ -123,7 +128,8 @@ export class OpenRouterMedia implements MediaBackend {
   async video(shot: Storyboard['shots'][number], output: string, task?: TaskContext) {
     this.key(); let id = task?.providerTaskId;
     if (!id) {
-      const result = await this.json('/videos', { model: this.videoModel, prompt: shot.videoPrompt, duration: shot.duration, resolution: this.resolution, aspect_ratio: '16:9', generate_audio: false });
+      if (task?.firstFrameUrl) { let url: URL; try { url = new URL(task.firstFrameUrl); } catch { throw new AppError(400, '首帧需要可访问的 HTTPS 素材地址'); } if (url.protocol !== 'https:' || url.username || url.password) throw new AppError(400, '首帧需要可访问的 HTTPS 素材地址'); }
+      const result = await this.json('/videos', { model: this.videoModel, prompt: shot.videoPrompt, duration: shot.duration, resolution: this.resolution, aspect_ratio: '16:9', generate_audio: false, ...(task?.firstFrameUrl ? { frame_images: [{ type: 'image_url', image_url: { url: task.firstFrameUrl }, frame_type: 'first_frame' }] } : {}) });
       if (typeof result?.id !== 'string' || !result.id) throw new UncertainSubmission();
       const submittedId: string = result.id; id = submittedId;
       try { task?.persistTaskId(submittedId); }

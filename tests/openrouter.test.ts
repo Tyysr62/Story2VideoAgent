@@ -135,3 +135,19 @@ test('reference-conditioned keyframes pin a capable endpoint and transmit ordere
     expect(post.input_references).toEqual([{ type: 'image_url', image_url: { url: `data:image/png;base64,${Buffer.from('reference-pixels').toString('base64')}` } }]);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test('image-to-video sends first_frame and prices reference generation instead of text-only rates', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'story-i2v-')); const requests: { url: string; init?: RequestInit }[] = [];
+  try {
+    const media = new OpenRouterMedia({ apiKey: 'fixture', pollMs: 0, fetcher: async (input, init) => {
+      const url = String(input); requests.push({ url, init });
+      if (url.endsWith('/videos/models')) return Response.json({ data: [{ ...catalog.data[0], supported_frame_images: ['first_frame'], pricing_skus: { duration_seconds_480p: '0.02', reference_duration_seconds_480p: '0.07', reference_input_images: '0.04' } }] });
+      if (url.endsWith('/videos')) return Response.json({ id: 'i2v-task' });
+      if (url.includes('/content')) return new Response(Buffer.from('video-fixture'));
+      return Response.json({ status: 'completed' });
+    } });
+    const b = board(1); b.shots[0].duration = 5; await media.validateImageToVideo(b); expect((await media.estimateImageToVideo(b)).videoUsd).toBeCloseTo(0.39);
+    await media.video(b.shots[0], join(root, 'v.mp4'), { firstFrameUrl: 'https://bucket.example/frame.png?signed=fixture', persistTaskId() {} });
+    const post = JSON.parse(String(requests.find(r => r.init?.method === 'POST')?.init?.body)); expect(post.frame_images).toEqual([{ type: 'image_url', image_url: { url: 'https://bucket.example/frame.png?signed=fixture' }, frame_type: 'first_frame' }]);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

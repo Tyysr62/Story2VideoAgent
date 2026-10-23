@@ -10,7 +10,7 @@ export interface MediaBackend {
   image(shot: Storyboard['shots'][number], output: string, task?: TaskContext): Promise<void>;
   video(shot: Storyboard['shots'][number], output: string, task?: TaskContext): Promise<void>;
 }
-export interface TaskContext { providerTaskId?: string; persistTaskId(id: string): void; }
+export interface TaskContext { providerTaskId?: string; firstFrameUrl?: string; persistTaskId(id: string): void; }
 export interface Composer { compose(inputs: string[], output: string): Promise<void>; }
 export function runFfmpeg(args: string[], timeoutMs = 120000): Promise<void> {
   const executable = process.env.FFMPEG_PATH || ffmpegPath;
@@ -33,6 +33,7 @@ export class MockMedia implements MediaBackend {
   }
   generationConfig(kind: string) { return { model: `offline-${kind}`, parameters: { width: 640, height: 360, fixture: true } }; }
   async validateKeyframe(_references: number) { return { simulated: true }; }
+  async validateImageToVideo(_board: Storyboard) {}
   async keyframe(input: { prompt: string }, output: string) { return this.image({ id: createHash('sha256').update(input.prompt).digest('hex'), imagePrompt: input.prompt } as Storyboard['shots'][number], output); }
   async video(shot: Storyboard['shots'][number], output: string) {
     await mkdir(dirname(output), { recursive: true });

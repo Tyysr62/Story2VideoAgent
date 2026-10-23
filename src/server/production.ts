@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { createReadStream } from 'node:fs';
+import { basename, dirname } from 'node:path';
 import { z } from 'zod';
 import { ProductionService, publicEntry } from '../production/service.js';
 
@@ -16,6 +16,6 @@ export async function registerProduction(app: FastifyInstance, service: Producti
     const { id, entryId } = ids.parse(req.params); const file = await service.file(id, entryId!);
     const mime = file.entry.file!.mime;
     if (!['image/png', 'image/jpeg', 'image/webp', 'video/mp4'].includes(mime) || (req.query as { download?: string }).download === '1') reply.header('Content-Disposition', 'attachment');
-    return reply.header('Cache-Control', 'private, no-store').type(mime).send(createReadStream(file.path));
+    return reply.header('Cache-Control', 'private, no-store').type(mime).sendFile(basename(file.path), dirname(file.path));
   });
 }

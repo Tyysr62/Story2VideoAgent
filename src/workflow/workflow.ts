@@ -7,6 +7,7 @@ import { Repository } from '../storage/repository.js';
 import type { Planner } from '../director/pi-director.js';
 import type { Composer, MediaBackend } from '../media/ffmpeg.js';
 import { UncertainSubmission, ProviderFailed } from '../media/openrouter.js';
+import { ProductionService } from '../production/service.js';
 
 type Backend = MediaBackend & { validate?(board: Storyboard): Promise<void>; estimate?(board: Storyboard): Promise<unknown>; generationConfig?(kind: Job['kind']): { model: string; parameters: Record<string, unknown> }; };
 export class Workflow {
@@ -55,8 +56,10 @@ export class Workflow {
   async idle(id?: string) { if (id) await this.active.get(id); else await Promise.all([...this.active.values()]); }
   async recover() {
     for (const p of this.repo.listProjects()) {
+      await new ProductionService(this.repo, this.root).recoverOutputs(p.id);
       if (p.status === 'planning') { this.repo.updateProject(p.id, { status: 'failed', error: '分镜规划被中断，请重新发起规划' }); for (const e of this.repo.production.list(p.id).filter(e => e.kind === 'prompt' && e.status === 'running')) this.repo.production.update(p.id, e.id, { status: 'failed', error: '分镜规划被中断' }); continue; }
       if (p.status !== 'generating') continue;
+      for (const e of this.repo.production.list(p.id).filter(e => ['image', 'video', 'compose'].includes(e.kind) && e.status === 'running')) this.repo.production.update(p.id, e.id, { status: !this.media.simulated && e.kind !== 'compose' && !e.providerTaskId ? 'unknown' : 'failed', error: '该次执行被中断，任务恢复会保留原云任务 ID' });
       for (const j of this.repo.jobs(p.id).filter(j => j.revision === p.revision && j.status === 'running')) {
         const uncertain = !this.media.simulated && j.kind !== 'compose' && !j.providerTaskId;
         this.repo.updateJob(j.id, { status: uncertain ? 'unknown' : 'queued' });
@@ -71,7 +74,7 @@ export class Workflow {
       const image = this.repo.ensureJob({ projectId: id, revision, kind: 'image', shotId: shot.id });
       await this.execute(image, path => this.media.image(shot, path));
       const video = this.repo.ensureJob({ projectId: id, revision, kind: 'video', shotId: shot.id });
-      const path = await this.execute(video, path => this.media.video(shot, path, { providerTaskId: video.providerTaskId, persistTaskId: providerTaskId => { this.repo.updateJob(video.id, { providerTaskId }); } }));
+      const path = await this.execute(video, (path, productionId) => this.media.video(shot, path, { providerTaskId: video.providerTaskId, persistTaskId: providerTaskId => { this.repo.updateJob(video.id, { providerTaskId }); this.repo.production.update(id, productionId, { providerTaskId }); } }));
       videos.push(path);
     }
     const compose = this.repo.ensureJob({ projectId: id, revision, kind: 'compose', shotId: null });
@@ -80,7 +83,7 @@ export class Workflow {
     if (current.status !== 'generating' || current.approvedRevision !== revision) throw new AppError(409, '执行版本或确认状态已变化，停止发布成片');
     this.repo.updateProject(id, { status: 'ready', finalArtifactId: compose.id, error: null }); this.repo.event(id, 'project.ready', { revision, artifactId: compose.id });
   }
-  private async execute(job: Job, fn: (path: string) => Promise<void>): Promise<string> {
+  private async execute(job: Job, fn: (path: string, productionId: string) => Promise<void>): Promise<string> {
     if (job.status === 'succeeded' && job.artifactId) {
       const path = join(this.root, this.repo.getArtifact(job.artifactId).path);
       if (!existsSync(path)) throw new AppError(409, '已完成产物丢失；停止自动重新生成以避免重复费用'); return path;
@@ -94,9 +97,10 @@ export class Workflow {
     const shot = this.repo.getProject(job.projectId).storyboard?.shots.find(s => s.id === job.shotId);
     const config = this.media.generationConfig?.(job.kind);
     const archived = this.repo.production.create({ projectId: job.projectId, kind: job.kind, label: job.kind === 'compose' ? '成片拼接' : `${shot?.title ?? '镜头'} · ${job.kind === 'image' ? '预览图' : '视频'}`, status: 'running', revision: job.revision, shotId: job.shotId ?? undefined, prompt: job.kind === 'image' ? shot?.imagePrompt : job.kind === 'video' ? shot?.videoPrompt : undefined, content: shot, simulated: this.media.simulated, model: config?.model, parameters: { ...config?.parameters, ...(job.kind === 'video' && shot ? { duration: shot.duration } : {}) } });
+    this.repo.production.recordOutput(job.projectId, archived.id, relative(this.root, path));
     let produced = false;
     try {
-      await fn(path); produced = true; const info = await stat(path); if (!info.size) throw new Error('Empty media file');
+      await fn(path, archived.id); produced = true; const info = await stat(path); if (!info.size) throw new Error('Empty media file');
       const bytes = await readFile(path); const imageMime = bytes[0] === 0xff ? 'image/jpeg' : bytes.subarray(0, 4).toString() === 'RIFF' ? 'image/webp' : 'image/png';
       const a: Artifact = { id: job.id, projectId: job.projectId, revision: job.revision, shotId: job.shotId, kind: job.kind, path: relative(this.root, path), mime: job.kind === 'image' ? imageMime : 'video/mp4', bytes: info.size,
         sha256: createHash('sha256').update(bytes).digest('hex'), simulated: this.media.simulated, createdAt: new Date().toISOString() };
@@ -105,6 +109,7 @@ export class Workflow {
     } catch (e) {
       const failure = !this.media.simulated && job.kind === 'image' && produced ? new UncertainSubmission() : e;
       this.repo.production.update(job.projectId, archived.id, { status: failure instanceof UncertainSubmission ? 'unknown' : 'failed', error: failure instanceof AppError ? failure.message : '媒体任务失败' });
+      await new ProductionService(this.repo, this.root).recoverOutputs(job.projectId);
       this.repo.updateJob(job.id, { status: failure instanceof UncertainSubmission ? 'unknown' : 'failed', error: failure instanceof AppError ? failure.message : '媒体任务失败', ...(failure instanceof ProviderFailed ? { providerTaskId: undefined } : {}) }); throw failure;
     }
   }

@@ -8,7 +8,7 @@ import { api, uploadPortrait } from './api.js';
 interface Props {
   projectId: string; library: CharacterLibrary; storyboard: Storyboard | null; jobs: PortraitJob[];
   disabled: boolean; boardDirty: boolean; simulated: boolean; onChanged(): Promise<unknown>; onError(message: string): void;
-  imageModel: string; onBusyChange(busy: boolean): void;
+  imageModel: string; onBusyChange(busy: boolean): void; onDraftChange?(dirty: boolean): void;
 }
 export function Characters(props: Props) {
   const { projectId, library } = props;
@@ -16,6 +16,8 @@ export function Characters(props: Props) {
   const [drafts, setDrafts] = useState<Record<string, boolean>>({});
   const reportDraft = useCallback((key: string, dirty: boolean) => setDrafts(current => current[key] === dirty ? current : { ...current, [key]: dirty }), []);
   const hasDraft = Object.values(drafts).some(Boolean);
+  useEffect(() => { props.onDraftChange?.(hasDraft); }, [hasDraft, props.onDraftChange]);
+  useEffect(() => () => { props.onDraftChange?.(false); }, [props.onDraftChange]);
   const locked = props.disabled || busy || props.jobs.some(j => j.status === 'running');
   async function run(operation: () => Promise<unknown>) {
     if (locked) return; setBusy(true); props.onBusyChange(true); props.onError('');

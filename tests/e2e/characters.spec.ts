@@ -49,7 +49,7 @@ test('V2 role upload, manifest approval, stable @ binding, rename and invalidati
   await card.getByLabel('造型描述', { exact: true }).fill('橙色皮毛，绿色围巾，圆眼睛，体型和脸型保持不变');
   await card.getByRole('button', { name: '保存造型', exact: true }).click();
   await expect(page.getByText('角色待定稿', { exact: true })).toBeVisible();
-  await expect(page.getByText('V2 视频生成将在 M2 开放', { exact: false })).toBeVisible();
+  await expect(page.getByText('参考图驱动首帧，再以已确认首帧生成视频', { exact: false })).toBeVisible();
   await page.reload(); await page.getByRole('button', { name: /月光邮局/ }).first().click();
   await expect(page.getByTestId('character-fox').getByLabel('角色名称', { exact: true })).toHaveValue('狐狸邮差');
   expect(errors).toEqual([]);

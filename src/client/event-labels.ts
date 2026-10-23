@@ -38,6 +38,14 @@ export function describeEvent(event: Pick<ProjectEvent, 'type' | 'data'>, contex
     case 'job.started': return kind === 'compose' ? '开始拼接成片' : kind === 'image' ? `开始生成镜头预览图${subject}` : kind === 'video' ? `开始生成镜头视频${subject}` : '生成任务已开始';
     case 'job.succeeded': return kind === 'compose' ? '成片拼接已完成' : kind === 'image' ? `镜头预览图已生成${subject}` : kind === 'video' ? `镜头视频已生成${subject}` : '生成任务已完成';
     case 'project.ready': return '成片已完成，可预览或下载';
+    case 'keyframe.started': return `开始生成分镜首帧${subject}`;
+    case 'keyframe.succeeded': return `分镜首帧已生成${subject}，请审阅画面`;
+    case 'keyframe.failed': return data.unknown === true ? `首帧提交状态待核实${subject}，请先核实云端任务` : `首帧生成失败${subject}，请查看生产记录`;
+    case 'keyframe.selected': return `已切换首帧候选版本${subject}，请重新确认整组首帧`;
+    case 'keyframes.approved': return '整组首帧已确认，可以提交视频生成';
+    case 'video.started': return data.resuming === true ? `继续查询已有云端视频任务${subject}` : `开始生成首帧驱动视频${subject}`;
+    case 'video.succeeded': return `首帧视频已生成${subject}`;
+    case 'video.failed': return data.unknown === true ? `视频提交状态待核实${subject}，已阻止自动重提` : `视频生成或下载未完成${subject}，请查看生产记录`;
     default: return '执行状态已更新';
   }
 }

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import sharp from 'sharp';
 import { Repository } from '../src/storage/repository.js';
 import { CharacterService } from '../src/characters/service.js';
-import { M2Service } from '../src/production/m2.js';
+import { M2Service, type M2Backend } from '../src/production/m2.js';
 import { MockMedia, FfmpegComposer } from '../src/media/ffmpeg.js';
 import { board } from './fixtures.js';
 import { UncertainSubmission } from '../src/media/openrouter.js';
@@ -13,7 +13,7 @@ import { UncertainSubmission } from '../src/media/openrouter.js';
 const close: (() => Promise<void>)[] = []; afterEach(async () => { for (const f of close.splice(0)) await f(); });
 async function setup(fail = false) {
   const root = await mkdtemp(join(tmpdir(), 'story-m2-')); const repo = new Repository(join(root, 'app.db')); const mock = new MockMedia(); let calls = 0;
-  const backend = { ...mock, simulated: true, generationConfig: (kind: string) => ({ model: `fixture-${kind}`, parameters: { resolution: '1K' } }),
+  const backend: M2Backend = { ...mock, simulated: true, generationConfig: (kind: string) => ({ model: `fixture-${kind}`, parameters: { resolution: '1K' } }),
     validateKeyframe: async () => ({ provider: 'fixture' }),
     keyframe: async (input: any, output: string) => { calls++; if (fail) throw new UncertainSubmission(); await mock.image({ ...board(1).shots[0], imagePrompt: input.prompt }, output); },
     image: mock.image.bind(mock), video: mock.video.bind(mock),
@@ -52,4 +52,63 @@ test('unknown image submission retains input and blocks another POST for that sa
 test('preflight rejects a missing role image before any generation', async () => {
   const { root, repo, service, id, calls } = await setup(); const asset = repo.characters.images(id)[0]; await rm(join(root, asset.path));
   await expect(service.frames(id, { revision: 2, shotIds: ['shot-1'], requestId: 'missing', acceptCost: true })).rejects.toThrow(/丢失/); expect(calls()).toBe(0);
+});
+
+test('approved first frames drive selected videos, reuse valid clips, compose in order and remain exportable', async () => {
+  const { root, repo, service, id, backend } = await setup();
+  await service.frames(id, { revision: 2, shotIds: ['shot-1', 'shot-2'], requestId: 'frames', acceptCost: true });
+  await service.approve(id, 2, service.view(id).manifestHash);
+  const frames: string[] = []; const mock = new MockMedia();
+  backend.video = async (shot, path, task) => { frames.push(task!.firstFrameUrl!); await mock.video(shot, path); };
+  const transport = { configured: true, frame: async () => 'https://storage.example/first.png?signature=private-fixture' };
+  const videos = new M2Service(repo, root, backend, new FfmpegComposer(), transport);
+  await videos.videos(id, { revision: 2, shotIds: ['shot-1'], requestId: 'video-one', acceptCost: true, manifestHash: service.view(id).manifestHash });
+  expect(repo.getProject(id).finalArtifactId).toBeNull(); expect(frames).toHaveLength(1);
+  await videos.videos(id, { revision: 2, shotIds: ['shot-1', 'shot-2'], requestId: 'video-all', acceptCost: true, manifestHash: service.view(id).manifestHash });
+  expect(frames).toHaveLength(2); expect(repo.getProject(id).status).toBe('ready'); expect(repo.getProject(id).finalArtifactId).toBeTruthy();
+  expect(JSON.stringify(repo.production.list(id))).not.toContain('private-fixture');
+  const before = service.view(id).manifestHash; const b = repo.getProject(id).storyboard!; b.shots[0].videoPrompt = '新运镜'; repo.saveStoryboard(id, 2, b);
+  await expect(videos.videos(id, { revision: 3, shotIds: ['shot-1'], requestId: 'stale-video', acceptCost: true, manifestHash: before })).rejects.toThrow(/确认|清单/); expect(frames).toHaveLength(2);
+});
+
+test('missing object storage blocks a real billed video before any POST', async () => {
+  const { root, repo, service, id, backend } = await setup(); await service.frames(id, { revision: 2, shotIds: ['shot-1', 'shot-2'], requestId: 'frames', acceptCost: true }); await service.approve(id, 2, service.view(id).manifestHash);
+  let calls = 0; const real = { ...backend, simulated: false, video: async () => { calls++; } };
+  const videos = new M2Service(repo, root, real, new FfmpegComposer());
+  await expect(videos.videos(id, { revision: 2, shotIds: ['shot-1'], requestId: 'no-store', acceptCost: true, manifestHash: videos.view(id).manifestHash })).rejects.toThrow(/对象存储/); expect(calls).toBe(0);
+});
+
+test('video polling resumes the saved cloud ID after interruption without uploading or submitting again', async () => {
+  const { root, repo, service, id, backend } = await setup(); await service.frames(id, { revision: 2, shotIds: ['shot-1', 'shot-2'], requestId: 'frames', acceptCost: true }); await service.approve(id, 2, service.view(id).manifestHash);
+  let submits = 0; let fail = true; const mock = new MockMedia();
+  backend.video = async (shot, output, task) => { if (!task!.providerTaskId) { submits++; task!.persistTaskId('cloud-saved'); } if (fail) { fail = false; throw Error('poll timeout'); } await mock.video(shot, output); };
+  const videos = new M2Service(repo, root, backend, new FfmpegComposer()); const manifestHash = videos.view(id).manifestHash;
+  await videos.videos(id, { revision: 2, shotIds: ['shot-1'], requestId: 'first', acceptCost: true, manifestHash });
+  await videos.recover(); await videos.videos(id, { revision: 2, shotIds: ['shot-1'], requestId: 'resume', acceptCost: true, manifestHash });
+  expect(submits).toBe(1); expect(repo.production.list(id).filter(e => e.kind === 'video')).toHaveLength(1); expect(videos.view(id).shots[0].videoCurrent).toBe(true);
+});
+
+test('renaming display labels does not change the actual visual prompt or its fingerprint', async () => {
+  const { repo, service, id } = await setup(); const before = service.compile(id, 'shot-1'); const lib = repo.characters.snapshot(id); const c = lib.characters[0];
+  repo.characters.updateLook(id, lib.revision, c.id, c.looks[0].id, { name: '青年造型' });
+  const after = service.compile(id, 'shot-1'); expect(after.hash).toBe(before.hash); expect(after.prompt).toBe(before.prompt);
+});
+
+test('interruption recovers already-written bytes into the production library without a new request', async () => {
+  const { root, repo, service, id, calls } = await setup();
+  const path = `production/${id}/interrupted.image`; await mkdir(dirname(join(root, path)), { recursive: true }); await writeFile(join(root, path), 'already-produced-bytes');
+  repo.production.create({ projectId: id, kind: 'keyframe', label: '中断首帧', status: 'running', prompt: '原始输入', outputPaths: [path] });
+  repo.updateProject(id, { status: 'generating' }); await service.recover();
+  expect(repo.production.list(id).some(e => e.file?.path === path)).toBe(true); expect(calls()).toBe(0);
+});
+
+test('a persisted cloud video can resume even if storage configuration is later unavailable', async () => {
+  const { root, repo, service, id, backend } = await setup(); await service.frames(id, { revision: 2, shotIds: ['shot-1', 'shot-2'], requestId: 'frames', acceptCost: true }); await service.approve(id, 2, service.view(id).manifestHash);
+  const mock = new MockMedia(); let submissions = 0; let pollFails = true;
+  const real: M2Backend = { ...backend, simulated: false, validateImageToVideo: async () => {}, video: async (shot, path, task) => { if (!task!.providerTaskId) { submissions++; task!.persistTaskId('paid-existing'); } if (pollFails) { pollFails = false; throw Error('poll error'); } await mock.video(shot, path); } };
+  const first = new M2Service(repo, root, real, new FfmpegComposer(), { configured: true, frame: async () => 'https://bucket.example/frame.png' }); const manifestHash = first.view(id).manifestHash;
+  await first.videos(id, { revision: 2, shotIds: ['shot-1'], requestId: 'start', acceptCost: true, manifestHash });
+  const restarted = new M2Service(repo, root, real, new FfmpegComposer());
+  await restarted.videos(id, { revision: 2, shotIds: ['shot-1'], requestId: 'resume-without-upload', acceptCost: true, manifestHash });
+  expect(submissions).toBe(1); expect(restarted.view(id).shots[0].videoCurrent).toBe(true);
 });
