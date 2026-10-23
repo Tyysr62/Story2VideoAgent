@@ -3,12 +3,14 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { CharacterStore } from './characters.js';
+import { PortraitJobs } from './portrait-jobs.js';
 import { AppError, validateStoryboard, type Project, type Job, type Artifact, type ProjectEvent } from '../domain/storyboard.js';
 
 const stamp = () => new Date().toISOString();
 export class Repository {
   private db: DatabaseSync;
   readonly characters: CharacterStore;
+  readonly portraits: PortraitJobs;
   constructor(path: string) {
     const existed = path !== ':memory:' && existsSync(path);
     mkdirSync(dirname(path), { recursive: true }); this.db = new DatabaseSync(path);
@@ -27,6 +29,7 @@ export class Repository {
       CREATE TABLE IF NOT EXISTS character_libraries(project_id TEXT PRIMARY KEY, payload TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS character_images(id TEXT PRIMARY KEY, project_id TEXT NOT NULL, payload TEXT NOT NULL);`);
     this.characters = new CharacterStore(this.db, id => this.getProject(id));
+    this.portraits = new PortraitJobs(this.db);
   }
   close() { this.db.close(); }
   private read<T>(row: unknown): T { return JSON.parse((row as { payload: string }).payload) as T; }

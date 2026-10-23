@@ -55,7 +55,16 @@ export class OpenRouterMedia implements MediaBackend {
       ratePerSecond: rate, checkedAt: new Date().toISOString(), note: '目录估算，不含分镜模型、重试及额外输入费用，以实际账单为准' };
   }
   async image(shot: Storyboard['shots'][number], output: string) {
-    const result = await this.json('/images', { model: this.imageModel, prompt: shot.imagePrompt, resolution: this.options.imageResolution || '768', aspect_ratio: '16:9', n: 1 });
+    return this.generateImage(shot.imagePrompt, output, '16:9');
+  }
+  async portrait(prompt: string, output: string) { return this.generateImage(prompt, output, '1:1'); }
+  async estimatePortrait() {
+    const endpoint = await this.json(`/images/models/${this.imageModel}/endpoints`);
+    const prices = (endpoint.endpoints ?? []).flatMap((e: any) => e.pricing ?? []).filter((p: any) => p.billable === 'output_image' && p.unit === 'image' && (!p.variant || p.variant === (this.options.imageResolution || '768').toLowerCase())).map((p: any) => Number(p.cost_usd)).filter(Number.isFinite);
+    return { imageModel: this.imageModel, imageUsd: prices.length ? Math.min(...prices) : null, checkedAt: new Date().toISOString(), note: '单张候选图目录估算，不含额外输入及重试费用，以供应商账单为准' };
+  }
+  private async generateImage(prompt: string, output: string, aspectRatio: string) {
+    const result = await this.json('/images', { model: this.imageModel, prompt, resolution: this.options.imageResolution || '768', aspect_ratio: aspectRatio, n: 1 });
     // A 2xx image response may already be billed. Local decoding/storage errors
     // must never turn it back into a safe-to-repeat POST.
     try {
