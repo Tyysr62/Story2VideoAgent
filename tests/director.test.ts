@@ -1,9 +1,19 @@
 import { describe, test, expect } from 'vitest';
 import { PiDirector } from '../src/director/pi-director.js';
-import { scriptedStream } from './scripted-model.js';
+import { scriptedStream, failedStream } from './scripted-model.js';
 import { board } from './fixtures.js';
 
 describe('actual Pi SDK with an injected offline model transport', () => {
+  test.each([401, 402, 429, 500])('reports provider HTTP %i distinctly from invalid storyboard, without raw errors', async status => {
+    const d = new PiDirector({ apiKey: 'do-not-expose', stream: failedStream(`${status} provider error containing do-not-expose and private response body`) });
+    let error: Error | undefined; try { await d.plan('故事'); } catch (e) { error = e as Error; }
+    expect(error?.message).toContain(String(status)); expect(error?.message).not.toContain('do-not-expose'); expect(error?.message).not.toContain('private response'); expect(error?.message).not.toContain('未提交有效分镜');
+  });
+  test.each(['is_management_key', 'is_provisioning_key'])('blocks OpenRouter %s before calling a model', async flag => {
+    let calls = 0;
+    const d = new PiDirector({ apiKey: 'fixture-admin', baseUrl: 'https://openrouter.ai/api/v1', fetcher: async () => Response.json({ data: { [flag]: true } }), stream: (...args) => { calls++; return scriptedStream(board())(...args); } });
+    await expect(d.plan('故事')).rejects.toThrow(/管理密钥/); expect(calls).toBe(0);
+  });
   test.each([
     { model: 'deepseek-flash', inputs: ['text', 'image'] },
     { model: 'deepseek/deepseek-v4.1-flash-1017', inputs: ['text', 'image'] },

@@ -7,15 +7,15 @@ import { PiDirector } from '../director/pi-director.js';
 import { FfmpegComposer, MockMedia } from '../media/ffmpeg.js';
 import { OpenRouterMedia, DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL } from '../media/openrouter.js';
 import { createApp } from './app.js';
+import { resolveDirectorConfig } from '../config/providers.js';
 
 dotenv({ path: '.env.local', quiet: true });
 const demo = process.argv.includes('--demo');
 const root = resolve(process.env.STORY_AGENT_DATA_DIR || (demo ? './data/demo' : './data/live')); await mkdir(root, { recursive: true });
 const repo = new Repository(join(root, 'story.db'));
 const orKey = process.env.OPENROUTER_API_KEY || '';
-const directKey = process.env.DEEPSEEK_API_KEY || '';
-const model = process.env.DIRECTOR_MODEL || (orKey || !directKey ? 'deepseek/deepseek-v4.1-flash-1017' : 'deepseek-flash');
-let planner = new PiDirector({ apiKey: orKey || directKey, model, baseUrl: process.env.DIRECTOR_BASE_URL || (orKey || !directKey ? 'https://openrouter.ai/api/v1' : 'https://api.deepseek.com'), allowedDurations: Array.from({ length: 11 }, (_, i) => i + 5) });
+const director = resolveDirectorConfig(process.env);
+let planner = new PiDirector({ ...director, allowedDurations: Array.from({ length: 11 }, (_, i) => i + 5) });
 if (demo) {
   const { board } = await import('../../tests/fixtures.js'); const { scriptedStream } = await import('../../tests/scripted-model.js');
   planner = new PiDirector({ apiKey: 'test-fixture', stream: (...args) => demoStream(...args) });
@@ -25,8 +25,9 @@ if (demo) {
 const media = demo ? new MockMedia() : new OpenRouterMedia({ apiKey: orKey, videoModel: process.env.VIDEO_MODEL, imageModel: process.env.IMAGE_MODEL, resolution: process.env.VIDEO_RESOLUTION || '480p' });
 const workflow = new Workflow(repo, planner, media, new FfmpegComposer(), root);
 const app = await createApp({ repo, workflow, dataRoot: root, staticRoot: resolve('dist'), publicConfig: {
-  plannerConfigured: demo || Boolean(orKey || directKey), mediaConfigured: demo || Boolean(orKey), simulated: demo,
-  plannerModel: demo ? 'Pi 脚本模型替身（非真实 AI）' : model, imageModel: demo ? '测试色卡' : process.env.IMAGE_MODEL || DEFAULT_IMAGE_MODEL,
+  plannerConfigured: demo || Boolean(director.apiKey), mediaConfigured: demo || Boolean(orKey), simulated: demo,
+  plannerProvider: demo ? 'offline-fixture' : director.provider,
+  plannerModel: demo ? 'Pi 脚本模型替身（非真实 AI）' : director.model, imageModel: demo ? '测试色卡' : process.env.IMAGE_MODEL || DEFAULT_IMAGE_MODEL,
   videoModel: demo ? '测试片段' : process.env.VIDEO_MODEL || DEFAULT_VIDEO_MODEL, resolution: process.env.VIDEO_RESOLUTION || '480p', maxShots: 20,
 } });
 await workflow.recover();

@@ -14,3 +14,11 @@ export function scriptedStream(value: unknown, seen: string[][] = []): DirectorS
     const stream = createAssistantMessageEventStream(); queueMicrotask(() => { stream.push({ type: 'start', partial: message }); stream.push({ type: 'done', reason: message.stopReason === 'toolUse' ? 'toolUse' : 'stop', message }); stream.end(); }); return stream;
   };
 }
+
+export function failedStream(errorMessage: string): DirectorStream {
+  return () => {
+    const message: AssistantMessage = { role: 'assistant', api: 'openai-completions', provider: 'story-deepseek', model: 'fixture', content: [], stopReason: 'error', errorMessage, timestamp: Date.now(),
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
+    const stream = createAssistantMessageEventStream(); queueMicrotask(() => { stream.push({ type: 'start', partial: message }); stream.push({ type: 'error', reason: 'error', error: message }); stream.end(); }); return stream;
+  };
+}

@@ -11,8 +11,8 @@ V1：故事 → Agent 自主分镜 → 人工编辑 / 版本确认 → API 生�
 ```powershell
 cd C:\Users\33548\Documents\ChatGPT\项目魔改\story-agent
 npm install
-Copy-Item .env.example .env.local
-# 在本地编辑 .env.local，填入 OPENROUTER_API_KEY
+if (-not (Test-Path .env.local)) { Copy-Item .env.example .env.local }
+# 在本地编辑 .env.local，填入 DEEPSEEK_API_KEY 和 OPENROUTER_API_KEY
 npm run build
 npm start
 ```
@@ -25,18 +25,20 @@ npm start
 
 | 用途 | 默认模型 / 配置 |
 |---|---|
-| 导演规划 | OpenRouter `deepseek/deepseek-v4.1-flash-1017` |
+| 导演规划 / 后续图片理解 | DeepSeek 官方直连 `deepseek-flash`，使用 `DEEPSEEK_API_KEY` |
 | 镜头预览图 | `black-forest-labs/flux-3-image-klein`，768 档 |
 | 文生视频 | `minimax/hailuo-3-max`，480p，16:9，关闭音频生成 |
 | 最终拼接 | 本地 FFmpeg，统一输出 1280×720 / 24fps / 静音 MP4 |
 
-DeepSeek 能力更正（2026-10-22）：当前官方 `deepseek-flash` 对应 V4.1 Flash 1017，支持原生文本 + 图片输入；本项目默认 OpenRouter 模型也属于这一版本。Pi 的模型能力声明应包含 `image`，不能因为当前分镜接口只传文本而将模型声明为仅文本。[官方 Vision 文档](https://api-docs.deepseek.com/guides/vision/)、[官方更新日志](https://api-docs.deepseek.com/updates/)、[OpenRouter 模型说明](https://openrouter.ai/deepseek/deepseek-v4.1-flash-1017)。当前 V1 仍只开放文字故事入口；参考图上传、视频抽帧视觉检查与质量反馈需要后续独立模块交付，能力声明修正不代表这些功能已经完成。
+DeepSeek 能力更正（2026-10-22）：当前官方 `deepseek-flash` 对应 V4.1 Flash 1017，支持原生文本 + 图片输入。Pi 的模型能力声明包含 `image`。[官方 Vision 文档](https://api-docs.deepseek.com/guides/vision/)、[官方更新日志](https://api-docs.deepseek.com/updates/)。按用户在 2026-10-23 确认的分工，DeepSeek 能力优先直连：分镜规划已使用官方端点，后续图片理解也沿用此配置。OpenRouter 负责图像/视频生成。当前 V1 仍只开放文字故事入口；参考图上传、视频抽帧视觉检查与质量反馈需要后续独立模块交付。
 
 价格与能力以 OpenRouter 实时目录为准。2026-10-22 的公开目录快照中，默认图像约 $0.008 / 张，视频 480p 约 $0.05 / 秒；20 个各 5 秒的镜头约 $5.16，**不含分镜模型、重试及其他输入费用**。这只是目录估算，不是账单承诺。界面提供实时目录估算按钮；无法取得报价时显示未知，不伪造价格。
 
 参考：[视频目录](https://openrouter.ai/api/v1/videos/models)、[默认图像端点](https://openrouter.ai/api/v1/images/models/black-forest-labs/flux-3-image-klein/endpoints)、[本次价格快照](docs/model-pricing-snapshot.json)。生成前会校验视频模型支持的时长、分辨率与画幅，当前默认规划提示采用 H3 Max 的 5–15 秒 / 镜头。更换视频模型时还需调整 `main.ts` 的规划时长约束，不能保证仅替换 ID 即兼容。
 
-也支持仅配置 `DEEPSEEK_API_KEY` 测试直连规划：删除 `DIRECTOR_MODEL` / `DIRECTOR_BASE_URL` 覆盖项且不设置 OpenRouter key 时，规划自动采用 DeepSeek 直连。媒体生成仍需要 OpenRouter key。V1 完整闭环推荐统一使用 OpenRouter；若同时设置两个 key，规划优先使用 OpenRouter key，不能仅切换规划 URL 来混用凭据。
+`DIRECTOR_PROVIDER=deepseek` 显式选择官方直连，即使同时存在 OpenRouter key，也只用 DeepSeek key 调用规划。供应商、端点、模型 ID 必须匹配；冲突配置会在本地报错。没有显式供应商和端点时，优先使用已配置的 DeepSeek key。需要用 OpenRouter 规划时，同时设置 `DIRECTOR_PROVIDER=openrouter`、`DIRECTOR_MODEL=deepseek/deepseek-v4.1-flash-1017`、`DIRECTOR_BASE_URL=https://openrouter.ai/api/v1`。
+
+`OPENROUTER_API_KEY` 必须是普通推理密钥。管理 / Provisioning Key 可以通过认证和余额查询，但不能调用生成模型，不能用查询成功代替实际调用验收。详情见 [OpenRouter 官方管理密钥说明](https://openrouter.ai/blog/tutorials/team-spend-controls-setup/)。
 
 ### 不用密钥查看闭环
 
@@ -64,6 +66,7 @@ src/
   domain/storyboard.ts      1–20 镜头 Schema、项目/任务/产物类型
   storage/repository.ts     SQLite、版本冲突检测、唯一任务键、事件
   director/pi-director.ts   真正的 Pi AgentSession 与结构化分镜工具
+  config/providers.ts      官方端点、供应商与凭据的匹配，防止跨供应商错发
   media/openrouter.ts      云端目录、报价、生图、异步视频、结果下载
   media/ffmpeg.ts           成片拼接与明确隔离的离线测试素材
   workflow/workflow.ts      确认门禁、去重、持久化执行、重启恢复
@@ -104,7 +107,7 @@ npm run test:e2e
 
 成片是 H.264 MP4，预览需要支持 H.264 的浏览器。Playwright 精简 Chromium 在本机实测不含该解码器，因此 Windows 默认以完整 Edge 做真实播放验收；Linux / macOS 和 CI 默认完整 Chrome，先执行 `npx playwright install --with-deps chrome`。可用 `PLAYWRIGHT_CHANNEL` 显式切换到其他支持该编码的浏览器。不能把缺少解码器导致的失败通过跳过播放断言掩盖。
 
-测试不消耗真实 API 额度：真实 Pi HTTP 编解码、SQLite、FFmpeg 与浏览器运行；云端响应由测试服务 / Fetch 替身提供。**当前尚未完成有凭据的 OpenRouter / DeepSeek 付费实测，生成效果、实际费用、线上供应商行为仍需配置本地密钥后验收。**
+自动化测试不消耗真实 API 额度：真实 Pi HTTP 编解码、SQLite、FFmpeg 与浏览器运行；云端响应由测试服务 / Fetch 替身提供。**2026-10-23 已用官方 DeepSeek 完成文字分镜实测，得到 5 个镜头、总计 30 秒的待确认草案。OpenRouter 生图 / 视频的真实生成效果和账单仍待用户确认分镜后验收。**
 
 ## 项目来源与许可
 
