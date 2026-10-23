@@ -56,7 +56,7 @@ export function App() {
   const asset = (shotId: string, kind: string) => detail?.artifacts.find(a => a.revision === project?.revision && a.shotId === shotId && a.kind === kind);
   const v2 = project?.workflowVersion === 2;
   const library = detail?.characterLibrary;
-  const currentBoard = () => draft && v2 && library ? { ...draft, characters: library.characters.map(c => ({ id: c.id, name: c.name, description: c.description })) } : draft;
+  const currentBoard = () => draft && v2 && library ? { ...draft, characters: library.characters.map(c => ({ id: c.id, name: c.name, description: c.description })), ...(draft.audioProfile ? { audioProfile: { ...draft.audioProfile, characterVoices: draft.audioProfile.characterVoices.filter(v => library.characters.some(c => c.id === v.characterId)) } } : {}) } : draft;
   return <div className="studio">
     <aside className="sidebar">
       <a className="brand" href="/" aria-label="Story Agent 首页"><span className="brand-icon">S<span>✦</span></span><span>STORY AGENT<small>让故事，发生。</small></span></a>

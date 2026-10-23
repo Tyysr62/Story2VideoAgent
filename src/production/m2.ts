@@ -11,6 +11,7 @@ import { runFfmpeg, type Composer, type MediaBackend } from '../media/ffmpeg.js'
 import { ProviderFailed, UncertainSubmission } from '../media/openrouter.js';
 import { ProductionService, publicEntry } from './service.js';
 import type { ProductionEntry } from './store.js';
+import { compileVideoPrompt, VIDEO_PROMPT_VERSION } from '../media/video-prompt.js';
 
 export interface ReferenceImage { assetId: string; path: string; mime: string; sha256: string; }
 export interface KeyframeInput { prompt: string; references: ReferenceImage[]; }
@@ -118,7 +119,8 @@ export class M2Service {
   async idle() { await Promise.allSettled([...this.active]); }
   private videoInput(id: string, shotId: string, frame: ProductionEntry) {
     const p = this.project(id); const shot = p.storyboard!.shots.find(s => s.id === shotId); if (!shot || !frame.file) throw new AppError(409, '视频缺少镜头首帧');
-    const config = this.config('video'); const prompt = `以给定首帧开始连续运动，保持首帧的人物身份、年龄、服装和画风。\n画风：${p.storyboard!.style}\n镜头动作：${shot.description}\n运镜：${shot.camera}\n视频要求：${shot.videoPrompt}`;
+    const config = this.config('video'); const board = { ...p.storyboard!, characters: this.repo.characters.snapshot(id).characters };
+    const prompt = compileVideoPrompt(board, shot, 'first_frame');
     return { prompt, config, shot, hash: fingerprint({ prompt, duration: shot.duration, frameId: frame.id, frameSha: frame.file.sha256, config }) };
   }
   private async outputFile(path: string, mime: string) { const info = await stat(path); if (!info.size) throw new AppError(502, '生成文件为空'); const hash = createHash('sha256'); for await (const chunk of createReadStream(path)) hash.update(chunk); return { path: relative(this.root, path), mime, bytes: info.size, sha256: hash.digest('hex') }; }
@@ -129,6 +131,7 @@ export class M2Service {
     if (!input.acceptCost) throw new AppError(409, '请先确认本次视频生成费用');
     const p = this.ready(id, input.revision); const view = this.view(id); if (!view.approved || view.manifestHash !== manifestHash) throw new AppError(409, '请先确认当前整组首帧清单');
     const compiled = input.shotIds.map(shotId => { const row = view.shots.find(s => s.shotId === shotId); if (!row?.entry || !row.current) throw new AppError(409, '镜头首帧不可用'); const frame = this.repo.production.get(id, row.entry.id); return { ...this.videoInput(id, shotId, frame), frame }; });
+    for (const c of compiled) if (this.repo.production.list(id).some(e => e.kind === 'video' && e.shotId === c.shot.id && e.inputHash !== c.hash && e.providerTaskId && !e.providerTerminal && e.status !== 'succeeded')) throw new AppError(409, '该镜头存在旧版本云任务，请先到供应商核实原任务；已阻止另一次收费提交');
     for (const c of compiled) if (this.repo.production.list(id).some(e => e.kind === 'video' && e.inputHash === c.hash && e.status === 'unknown')) throw new UncertainSubmission();
     const newInputs = compiled.filter(c => { const row = view.shots.find(s => s.shotId === c.shot.id)!; return !(row.videoCurrent && !input.force) && !row.videoResumable; });
     if (newInputs.length && !this.media.simulated && !this.transport?.configured) throw new AppError(503, '请先在本地配置 S3 兼容对象存储，用于传输已确认首帧；未提交视频费用');
@@ -145,7 +148,7 @@ export class M2Service {
           const selected = state.videos[c.shot.id] ? this.repo.production.get(id, state.videos[c.shot.id]) : undefined;
           if (!input.force && selected?.inputHash === c.hash && selected.status === 'succeeded') { await this.files.file(id, selected.id); continue; }
           const resuming = [...existing].reverse().find(e => e.providerTaskId && !e.providerTerminal && e.status !== 'succeeded');
-          const entry = resuming ?? this.repo.production.create({ projectId: id, kind: 'video', label: `${c.shot.title} · 首帧视频`, revision: p.revision, shotId: c.shot.id, status: 'running', prompt: c.prompt, model: c.config.model, parameters: { ...c.config.parameters, duration: c.shot.duration, frame_type: 'first_frame' }, dependencies: [c.frame.id], inputHash: c.hash, content: { shot: c.shot, firstFrameSha: c.frame.file!.sha256, approvalHash: manifestHash }, simulated: this.media.simulated });
+          const entry = resuming ?? this.repo.production.create({ projectId: id, kind: 'video', label: `${c.shot.title} · 首帧视频`, revision: p.revision, shotId: c.shot.id, status: 'running', prompt: c.prompt, model: c.config.model, parameters: { ...c.config.parameters, duration: c.shot.duration, frame_type: 'first_frame', promptVersion: VIDEO_PROMPT_VERSION, audioMode: c.shot.audio?.mode ?? 'silent' }, dependencies: [c.frame.id], inputHash: c.hash, content: { shot: c.shot, audioProfile: p.storyboard!.audioProfile, firstFrameSha: c.frame.file!.sha256, approvalHash: manifestHash }, simulated: this.media.simulated });
           this.repo.production.update(id, entry.id, { status: 'running', error: undefined }); this.repo.event(id, 'video.started', { entryId: entry.id, shotId: c.shot.id, resuming: Boolean(resuming) });
           const output = join(this.root, 'production', id, `${entry.id}-${Date.now()}.mp4`); await mkdir(dirname(output), { recursive: true });
           this.repo.production.recordOutput(id, entry.id, relative(this.root, output));

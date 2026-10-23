@@ -8,6 +8,7 @@ import type { Planner } from '../director/pi-director.js';
 import type { Composer, MediaBackend } from '../media/ffmpeg.js';
 import { UncertainSubmission, ProviderFailed } from '../media/openrouter.js';
 import { ProductionService } from '../production/service.js';
+import { compileVideoPrompt, VIDEO_PROMPT_VERSION } from '../media/video-prompt.js';
 
 type Backend = MediaBackend & { validate?(board: Storyboard): Promise<void>; estimate?(board: Storyboard): Promise<unknown>; generationConfig?(kind: Job['kind']): { model: string; parameters: Record<string, unknown> }; };
 export class Workflow {
@@ -74,7 +75,8 @@ export class Workflow {
       const image = this.repo.ensureJob({ projectId: id, revision, kind: 'image', shotId: shot.id });
       await this.execute(image, path => this.media.image(shot, path));
       const video = this.repo.ensureJob({ projectId: id, revision, kind: 'video', shotId: shot.id });
-      const path = await this.execute(video, (path, productionId) => this.media.video(shot, path, { providerTaskId: video.providerTaskId, persistTaskId: providerTaskId => { this.repo.updateJob(video.id, { providerTaskId }); this.repo.production.update(id, productionId, { providerTaskId }); } }));
+      const compiled = { ...shot, videoPrompt: compileVideoPrompt(p.storyboard!, shot, 'text') };
+      const path = await this.execute(video, (path, productionId) => this.media.video(compiled, path, { providerTaskId: video.providerTaskId, persistTaskId: providerTaskId => { this.repo.updateJob(video.id, { providerTaskId }); this.repo.production.update(id, productionId, { providerTaskId }); } }));
       videos.push(path);
     }
     const compose = this.repo.ensureJob({ projectId: id, revision, kind: 'compose', shotId: null });
@@ -96,7 +98,8 @@ export class Workflow {
     this.repo.updateJob(job.id, { status: 'running', attempts: job.attempts + 1, error: null }); this.repo.event(job.projectId, 'job.started', { jobId: job.id, kind: job.kind, shotId: job.shotId });
     const shot = this.repo.getProject(job.projectId).storyboard?.shots.find(s => s.id === job.shotId);
     const config = this.media.generationConfig?.(job.kind);
-    const archived = this.repo.production.create({ projectId: job.projectId, kind: job.kind, label: job.kind === 'compose' ? '成片拼接' : `${shot?.title ?? '镜头'} · ${job.kind === 'image' ? '预览图' : '视频'}`, status: 'running', revision: job.revision, shotId: job.shotId ?? undefined, prompt: job.kind === 'image' ? shot?.imagePrompt : job.kind === 'video' ? shot?.videoPrompt : undefined, content: shot, simulated: this.media.simulated, model: config?.model, parameters: { ...config?.parameters, ...(job.kind === 'video' && shot ? { duration: shot.duration } : {}) } });
+    const sourceBoard = this.repo.getProject(job.projectId).storyboard!;
+    const archived = this.repo.production.create({ projectId: job.projectId, kind: job.kind, label: job.kind === 'compose' ? '成片拼接' : `${shot?.title ?? '镜头'} · ${job.kind === 'image' ? '预览图' : '视频'}`, status: 'running', revision: job.revision, shotId: job.shotId ?? undefined, prompt: job.kind === 'image' ? shot?.imagePrompt : job.kind === 'video' && shot ? compileVideoPrompt(sourceBoard, shot, 'text') : undefined, content: { shot, audioProfile: sourceBoard.audioProfile }, simulated: this.media.simulated, model: config?.model, parameters: { ...config?.parameters, ...(job.kind === 'video' && shot ? { duration: shot.duration, promptVersion: VIDEO_PROMPT_VERSION, audioMode: shot.audio?.mode ?? 'silent' } : {}) } });
     this.repo.production.recordOutput(job.projectId, archived.id, relative(this.root, path));
     let produced = false;
     try {

@@ -75,7 +75,27 @@ test('uses real OpenRouter image/video contracts and persists task ID before pol
     await media.video(shot, join(root, 'video.mp4'), { persistTaskId: id => saved.push(id) });
     expect(saved).toEqual(['job-real-id']); expect((await readFile(join(root, 'video.mp4'))).length).toBe(3);
     const request = JSON.parse(String(s.requests.find(x => x.url.endsWith('/videos'))!.init!.body));
-    expect(request).toMatchObject({ model: DEFAULT_VIDEO_MODEL, duration: 5, resolution: '480p', generate_audio: false });
+    expect(request).toMatchObject({ model: DEFAULT_VIDEO_MODEL, duration: 5, resolution: '480p' });
+    expect(request).not.toHaveProperty('generate_audio');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('non-HeyGen audio requests require an explicit audio capability before any paid POST', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'story-audio-routing-')); const requests: any[] = []; let supported = false;
+  try {
+    const fetcher: typeof fetch = async (input, init) => {
+      if (init?.method === 'POST') requests.push(JSON.parse(String(init.body)));
+      if (String(input).endsWith('/videos/models')) return Response.json({ data: [{ ...catalog.data[0], id: 'fixture/video', generate_audio: supported }] });
+      if (String(input).endsWith('/videos')) return Response.json({ id: 'audio-task' });
+      if (String(input).includes('/content')) return new Response(new Uint8Array([1]));
+      return Response.json({ status: 'completed' });
+    };
+    const b: any = board(1); b.shots[0].duration = 5; b.shots[0].audio = { mode: 'ambient', dialogue: [], narration: null, ambience: '雨声', soundEffects: [], music: 'none' };
+    const unsupported = new OpenRouterMedia({ apiKey: 'fixture', videoModel: 'fixture/video', fetcher, pollMs: 0 });
+    await expect(unsupported.validate(b)).rejects.toThrow(/声音|音频/); expect(requests).toEqual([]);
+    supported = true; const media = new OpenRouterMedia({ apiKey: 'fixture', videoModel: 'fixture/video', fetcher, pollMs: 0 });
+    await media.video(b.shots[0], join(root, 'audio.mp4'), { persistTaskId() {} }); expect(requests[0].generate_audio).toBe(true);
+    delete b.shots[0].audio; await media.video(b.shots[0], join(root, 'silent.mp4'), { persistTaskId() {} }); expect(requests[1].generate_audio).toBe(false);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 test('resumes persisted cloud jobs without a new paid submission', async () => {

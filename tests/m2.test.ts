@@ -9,6 +9,34 @@ import { M2Service, type M2Backend } from '../src/production/m2.js';
 import { MockMedia, FfmpegComposer } from '../src/media/ffmpeg.js';
 import { board } from './fixtures.js';
 import { UncertainSubmission } from '../src/media/openrouter.js';
+import { silentAudio } from '../src/domain/audio.js';
+
+test('voice and dialogue edits reuse all keyframes and unrelated videos, archive actual compiled prompts and revoke approval', async () => {
+  const { repo, service, id } = await setup();
+  await service.frames(id, { revision: 2, shotIds: ['shot-1', 'shot-2'], requestId: 'frames-audio', acceptCost: true });
+  await service.approve(id, 2, service.view(id).manifestHash);
+  await service.videos(id, { revision: 2, shotIds: ['shot-1', 'shot-2'], requestId: 'video-silent', acceptCost: true, manifestHash: service.view(id).manifestHash });
+  const b = repo.getProject(id).storyboard!;
+  b.audioProfile = { narratorVoice: '温暖女声', characterVoices: [{ characterId: 'fox', description: '清澈少年声' }] };
+  b.shots[0].audio = { ...silentAudio(), mode: 'speech', dialogue: [{ characterId: 'fox', text: '原来，你一直都记得。', delivery: '轻声', placement: 'on_screen' }] };
+  repo.saveStoryboard(id, 2, b);
+  expect(service.view(id).shots.map(s => s.current)).toEqual([true, true]);
+  expect(service.view(id).shots.map(s => s.videoCurrent)).toEqual([false, true]); expect(service.view(id).approved).toBe(false);
+  await service.approve(id, 3, service.view(id).manifestHash);
+  await service.videos(id, { revision: 3, shotIds: ['shot-1', 'shot-2'], requestId: 'video-spoken', acceptCost: true, manifestHash: service.view(id).manifestHash });
+  const videos = repo.production.list(id).filter(e => e.kind === 'video'); expect(videos).toHaveLength(3);
+  expect(videos.at(-1)?.prompt).toContain('原来，你一直都记得。'); expect(videos.at(-1)?.prompt).toContain('清澈少年声');
+  b.audioProfile.characterVoices[0].description = '低沉男声'; repo.saveStoryboard(id, 3, b);
+  expect(service.view(id).shots.map(s => s.current)).toEqual([true, true]); expect(service.view(id).shots.map(s => s.videoCurrent)).toEqual([false, true]);
+});
+
+test('an older unfinished cloud task blocks a new submission after prompt compilation changes', async () => {
+  const { repo, service, id } = await setup();
+  await service.frames(id, { revision: 2, shotIds: ['shot-1', 'shot-2'], requestId: 'legacy-frames', acceptCost: true });
+  await service.approve(id, 2, service.view(id).manifestHash);
+  repo.production.create({ projectId: id, kind: 'video', shotId: 'shot-1', label: '上个版本的云任务', status: 'failed', inputHash: 'legacy-compiler-hash', providerTaskId: 'already-paid-old-task' });
+  await expect(service.videos(id, { revision: 2, shotIds: ['shot-1'], requestId: 'changed-input', acceptCost: true, manifestHash: service.view(id).manifestHash })).rejects.toThrow(/旧版本云任务/);
+});
 
 const close: (() => Promise<void>)[] = []; afterEach(async () => { for (const f of close.splice(0)) await f(); });
 async function setup(fail = false) {

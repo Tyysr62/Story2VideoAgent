@@ -5,6 +5,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { AppError, type Storyboard } from '../domain/storyboard.js';
 import type { MediaBackend, TaskContext } from './ffmpeg.js';
 import type { KeyframeInput } from '../production/m2.js';
+import { VIDEO_PROMPT_VERSION } from './video-prompt.js';
 
 export const DEFAULT_VIDEO_MODEL = 'heygen/heygen-video-1';
 export const DEFAULT_IMAGE_MODEL = 'qwen/qwen-image-2.1-turbo';
@@ -12,7 +13,7 @@ export const DEFAULT_IMAGE_RESOLUTION = '1K';
 export class UncertainSubmission extends AppError { readonly uncertain = true; constructor() { super(409, '云端提交状态未知，已阻止自动重复提交；请先到 OpenRouter 核实，避免重复扣费'); } }
 export class ProviderFailed extends AppError { readonly terminal = true; constructor() { super(502, 'OpenRouter 已确认生成失败，可确认后重新尝试'); } }
 interface Options { apiKey: string; videoModel?: string; imageModel?: string; resolution?: string; imageResolution?: string; baseUrl?: string; fetcher?: typeof fetch; pollMs?: number; maxPolls?: number; diagnosticRoot?: string; }
-interface Capabilities { id: string; supported_durations: number[]; supported_resolutions: string[]; supported_aspect_ratios: string[]; supported_frame_images?: string[]; pricing_skus: Record<string, string>; }
+interface Capabilities { id: string; supported_durations: number[]; supported_resolutions: string[]; supported_aspect_ratios: string[]; supported_frame_images?: string[]; generate_audio?: boolean; pricing_skus: Record<string, string>; }
 
 export class OpenRouterMedia implements MediaBackend {
   readonly simulated = false;
@@ -67,6 +68,16 @@ export class OpenRouterMedia implements MediaBackend {
     if (!cap.supported_resolutions?.includes(this.resolution)) throw new AppError(400, '模型不支持当前分辨率');
     if (!cap.supported_aspect_ratios?.includes('16:9')) throw new AppError(400, '模型不支持16:9画幅');
     if (board.shots.some(s => !cap.supported_durations?.includes(s.duration))) throw new AppError(400, `镜头时长不受支持，请使用 ${cap.supported_durations.join('/')} 秒`);
+    for (const shot of board.shots) await this.audioParameters(shot);
+  }
+  private async audioParameters(shot: Storyboard['shots'][number]): Promise<{ generate_audio?: boolean }> {
+    // HeyGen Video 1 always synthesizes scene audio upstream. Its native API has no
+    // generate_audio switch; OR's catalogue flag is currently ambiguous (2026-10-23).
+    // Let that provider use its default. Final silence is enforced locally.
+    if (this.videoModel === DEFAULT_VIDEO_MODEL) return {};
+    const wanted = Boolean(shot.audio && shot.audio.mode !== 'silent');
+    if (wanted && (await this.capabilities()).generate_audio !== true) throw new AppError(400, '当前视频模型未明确支持声音生成，请改为静音或选择已支持音频的模型；未提交视频费用');
+    return { generate_audio: wanted };
   }
   async validateImageToVideo(board: Storyboard) { await this.validate(board); if (!(await this.capabilities()).supported_frame_images?.includes('first_frame')) throw new AppError(400, '当前视频模型不支持 first_frame，未提交视频费用'); }
   async estimateImageToVideo(board: Storyboard) {
@@ -108,7 +119,7 @@ export class OpenRouterMedia implements MediaBackend {
     return this.generateImage(input.prompt, output, '16:9', { ...routing, ...(references.length ? { input_references: references } : {}) });
   }
   portraitConfig() { return { model: this.imageModel, parameters: { resolution: this.options.imageResolution || DEFAULT_IMAGE_RESOLUTION, aspect_ratio: '1:1', n: 1 } }; }
-  generationConfig(kind: 'image' | 'video' | 'compose') { return kind === 'image' ? { model: this.imageModel, parameters: { resolution: this.options.imageResolution || DEFAULT_IMAGE_RESOLUTION, aspect_ratio: '16:9', n: 1 } } : kind === 'video' ? { model: this.videoModel, parameters: { resolution: this.resolution, aspect_ratio: '16:9', generate_audio: false } } : { model: 'ffmpeg', parameters: { width: 1280, height: 720, fps: 24 } }; }
+  generationConfig(kind: 'image' | 'video' | 'compose') { return kind === 'image' ? { model: this.imageModel, parameters: { resolution: this.options.imageResolution || DEFAULT_IMAGE_RESOLUTION, aspect_ratio: '16:9', n: 1 } } : kind === 'video' ? { model: this.videoModel, parameters: { resolution: this.resolution, aspect_ratio: '16:9', audioStrategy: this.videoModel === DEFAULT_VIDEO_MODEL ? 'heygen-native-default' : 'catalogue-gated', promptVersion: VIDEO_PROMPT_VERSION } } : { model: 'ffmpeg', parameters: { width: 1280, height: 720, fps: 24 } }; }
   async estimatePortrait() {
     const endpoint = await this.json(`/images/models/${this.imageModel}/endpoints`);
     const prices = (endpoint.endpoints ?? []).flatMap((e: any) => e.pricing ?? []).filter((p: any) => p.billable === 'output_image' && p.unit === 'image' && (!p.variant || p.variant === (this.options.imageResolution || DEFAULT_IMAGE_RESOLUTION).toLowerCase())).map((p: any) => Number(p.cost_usd)).filter(Number.isFinite);
@@ -129,7 +140,8 @@ export class OpenRouterMedia implements MediaBackend {
     this.key(); let id = task?.providerTaskId;
     if (!id) {
       if (task?.firstFrameUrl) { let url: URL; try { url = new URL(task.firstFrameUrl); } catch { throw new AppError(400, '首帧需要可访问的 HTTPS 素材地址'); } if (url.protocol !== 'https:' || url.username || url.password) throw new AppError(400, '首帧需要可访问的 HTTPS 素材地址'); }
-      const result = await this.json('/videos', { model: this.videoModel, prompt: shot.videoPrompt, duration: shot.duration, resolution: this.resolution, aspect_ratio: '16:9', generate_audio: false, ...(task?.firstFrameUrl ? { frame_images: [{ type: 'image_url', image_url: { url: task.firstFrameUrl }, frame_type: 'first_frame' }] } : {}) });
+      const audio = await this.audioParameters(shot);
+      const result = await this.json('/videos', { model: this.videoModel, prompt: shot.videoPrompt, duration: shot.duration, resolution: this.resolution, aspect_ratio: '16:9', ...audio, ...(task?.firstFrameUrl ? { frame_images: [{ type: 'image_url', image_url: { url: task.firstFrameUrl }, frame_type: 'first_frame' }] } : {}) });
       if (typeof result?.id !== 'string' || !result.id) throw new UncertainSubmission();
       const submittedId: string = result.id; id = submittedId;
       try { task?.persistTaskId(submittedId); }

@@ -150,7 +150,7 @@ export class CharacterStore {
     });
   }
   impact(projectId: string, characterId: string, lookId?: string): string[] {
-    return (this.project(projectId).storyboard?.shots ?? []).filter(s => (s.characterRefs ?? []).some(r => r.characterId === characterId && (!lookId || r.lookId === lookId))).map(s => s.id);
+    return (this.project(projectId).storyboard?.shots ?? []).filter(s => (s.characterRefs ?? []).some(r => r.characterId === characterId && (!lookId || r.lookId === lookId)) || !lookId && s.audio?.dialogue.some(d => d.characterId === characterId)).map(s => s.id);
   }
   private assertUnused(projectId: string, characterId: string, lookId?: string) {
     const shots = this.impact(projectId, characterId, lookId);
@@ -183,8 +183,14 @@ export class CharacterStore {
   }
   validateStoryboard(projectId: string, storyboard: Storyboard, forApproval = false) {
     const library = this.snapshot(projectId);
+    const ids = new Set(library.characters.map(c => c.id));
+    if (storyboard.audioProfile?.characterVoices.some(v => !ids.has(v.characterId))) throw new AppError(400, '声音设定必须引用角色库中的身份');
     for (const shot of storyboard.shots) {
       const refs = shot.characterRefs ?? [];
+      for (const d of shot.audio?.dialogue ?? []) {
+        if (!ids.has(d.characterId)) throw new AppError(400, '台词必须引用角色库中的身份');
+        if (d.placement === 'on_screen' && !refs.some(r => r.characterId === d.characterId)) throw new AppError(409, '画内说话角色尚未绑定出镜造型');
+      }
       if (shot.characterIds.some(id => !refs.some(ref => ref.characterId === id))) throw new AppError(409, '角色身份尚未绑定明确造型引用');
       if (new Set(refs.map(referenceKey)).size !== refs.length) throw new AppError(400, '角色引用重复');
       if (forApproval) {

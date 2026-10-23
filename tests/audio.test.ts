@@ -42,3 +42,23 @@ test('stores voice and script revisions immutably in production history', () => 
     expect(repo.getProject(p.id).storyboard?.shots[0]).toHaveProperty('audio.dialogue.0.text', '下一站，是月亮。');
   } finally { repo.close(); }
 });
+
+test('V2 rejects invented off-screen speakers even if the submitted character list includes them', () => {
+  const repo = new Repository(':memory:');
+  try {
+    const p = repo.createProject('角色声音边界', 2); repo.saveStoryboard(p.id, 0, board(1), true);
+    const b = repo.getProject(p.id).storyboard!; b.characters.push({ id: 'invented', name: '伪造角色', description: '不在角色库中' });
+    b.shots[0].audio = { ...spoken(), mode: 'speech', dialogue: [{ characterId: 'invented', text: '画外声音', delivery: '', placement: 'off_screen' }] } as any;
+    expect(() => repo.saveStoryboard(p.id, 1, b)).toThrow(/声音|台词|角色/);
+  } finally { repo.close(); }
+});
+
+test('cannot delete an identity that is only referenced by off-screen dialogue', () => {
+  const repo = new Repository(':memory:');
+  try {
+    const p = repo.createProject('画外角色', 2); repo.saveStoryboard(p.id, 0, board(1), true);
+    const b = repo.getProject(p.id).storyboard!; b.shots[0].characterIds = []; b.shots[0].characterRefs = [];
+    b.shots[0].audio = { ...spoken(), dialogue: [{ characterId: 'fox', text: '我在这里。', delivery: '', placement: 'off_screen' }] } as any; repo.saveStoryboard(p.id, 1, b);
+    expect(() => repo.characters.deleteCharacter(p.id, repo.characters.snapshot(p.id).revision, 'fox')).toThrow(/引用/);
+  } finally { repo.close(); }
+});

@@ -45,7 +45,7 @@ function CharacterCard(props: CardProps) {
   useEffect(() => { props.reportDraft(`${character.id}:identity`, dirty); return () => props.reportDraft(`${character.id}:identity`, false); }, [dirty, character.id, props.reportDraft]);
   useEffect(() => { if (!dirty) { setName(character.name); setAliases(character.aliases.join('、')); setDescription(character.description); } }, [character.name, character.description, character.aliases.join('、'), dirty]);
   const base = `/projects/${projectId}/characters/${character.id}`;
-  const affected = props.storyboard?.shots.filter(s => s.characterRefs?.some(r => r.characterId === character.id)) ?? [];
+  const affected = props.storyboard?.shots.filter(s => s.characterRefs?.some(r => r.characterId === character.id) || s.audio?.dialogue.some(d => d.characterId === character.id)) ?? [];
   return <article className="character-card" data-testid={`character-${character.id}`}>
     <div className="section-row"><h3>{character.name}</h3><small className="muted">影响镜头：{affected.length ? affected.map(s => s.title).join('、') : '暂无引用'}</small></div>
     <div className="role-form"><label>角色名称<input aria-label="角色名称" value={name} maxLength={100} disabled={locked} onChange={e => { setName(e.target.value); beginEdit(); }}/></label><label>角色别名<input aria-label="角色别名" value={aliases} disabled={locked} onChange={e => { setAliases(e.target.value); beginEdit(); }} placeholder="以顿号或逗号分隔，历史别名会保留"/></label><label className="wide">角色身份描述<textarea aria-label="角色身份描述" value={description} maxLength={2000} disabled={locked} onChange={e => { setDescription(e.target.value); beginEdit(); }}/></label></div>
