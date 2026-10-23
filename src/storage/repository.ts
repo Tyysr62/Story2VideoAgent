@@ -45,17 +45,28 @@ export class Repository {
   getProject(id: string): Project { const row = this.db.prepare('SELECT payload FROM projects WHERE id=?').get(id); if (!row) throw new AppError(404, '项目不存在'); return this.read(row); }
   updateProject(id: string, patch: Partial<Omit<Project, 'id' | 'revision' | 'storyboard'>>): Project { const p = { ...this.getProject(id), ...patch }; this.putProject(p); return p; }
   assertRevision(p: Project, revision: number) { if (p.revision !== revision) throw new AppError(409, '项目版本已变化，请刷新后重试'); }
-  saveStoryboard(id: string, revision: number, value: unknown): Project {
-    const storyboard = validateStoryboard(value);
+  saveStoryboard(id: string, revision: number, value: unknown, fromPlanner = false): Project {
+    let storyboard = validateStoryboard(value);
     return this.transaction(() => {
       const p = this.getProject(id); this.assertRevision(p, revision);
-      if (p.status === 'generating' || (p.workflowVersion === 2 && p.status === 'planning')) throw new AppError(409, '规划或生成期间不能修改分镜');
+      if (p.status === 'generating' || (p.workflowVersion === 2 && p.status === 'planning' && !fromPlanner)) throw new AppError(409, '规划或生成期间不能修改分镜');
       if (p.workflowVersion === 2) {
+        if (fromPlanner) storyboard = this.characters.adoptPlan(id, storyboard);
         this.characters.validateStoryboard(id, storyboard);
         if (p.storyboard?.style !== storyboard.style) this.characters.invalidateApproval(id);
       }
       Object.assign(p, { storyboard, revision: p.revision + 1, approvedRevision: null, finalArtifactId: null, error: null, status: 'awaiting_approval' });
       this.putProject(p); this.event(id, 'storyboard.updated', { revision: p.revision, shots: storyboard.shots.length }); return p;
+    });
+  }
+  enableV2(id: string, revision: number): Project {
+    return this.transaction(() => {
+      const p = this.getProject(id); this.assertRevision(p, revision);
+      if (['planning', 'generating'].includes(p.status)) throw new AppError(409, '项目正在处理');
+      if (p.workflowVersion === 2) return p;
+      if (p.storyboard) p.storyboard = this.characters.adoptPlan(id, p.storyboard);
+      p.workflowVersion = 2; p.approvedRevision = null; p.status = p.storyboard ? 'awaiting_approval' : 'draft'; p.error = null;
+      this.putProject(p); this.event(id, 'project.v2_enabled', { revision }); return p;
     });
   }
   approve(id: string, revision: number): Project {

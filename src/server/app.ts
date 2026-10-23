@@ -5,8 +5,10 @@ import { resolve, relative, isAbsolute } from 'node:path';
 import { AppError } from '../domain/storyboard.js';
 import type { Repository } from '../storage/repository.js';
 import type { Workflow } from '../workflow/workflow.js';
+import type { CharacterService } from '../characters/service.js';
+import { registerCharacters } from './characters.js';
 
-interface Options { repo: Repository; workflow: Workflow; dataRoot: string; staticRoot?: string; publicConfig: Record<string, unknown>; }
+interface Options { repo: Repository; workflow: Workflow; characters?: CharacterService; dataRoot: string; staticRoot?: string; publicConfig: Record<string, unknown>; }
 const revision = z.object({ revision: z.number().int().nonnegative() });
 export async function createApp(o: Options) {
   const app = Fastify({ logger: false, bodyLimit: 256 * 1024 });
@@ -26,15 +28,16 @@ export async function createApp(o: Options) {
   app.get('/api/config', async () => o.publicConfig);
   app.get('/api/health', async () => ({ status: 'ok' }));
   app.get('/api/projects', async () => o.repo.listProjects());
-  app.post('/api/projects', async (req, reply) => { const input = z.object({ story: z.string().trim().min(1).max(20000) }).parse(req.body); return reply.code(201).send(o.repo.createProject(input.story)); });
+  app.post('/api/projects', async (req, reply) => { const input = z.object({ story: z.string().trim().min(1).max(20000), workflowVersion: z.union([z.literal(1), z.literal(2)]).optional() }).parse(req.body); return reply.code(201).send(o.repo.createProject(input.story, input.workflowVersion === 1 ? undefined : input.workflowVersion === 2 || o.characters ? 2 : undefined)); });
   const param = (req: { params: unknown }) => z.object({ id: z.string().min(1).max(100) }).parse(req.params).id;
   app.get('/api/projects/:id', async req => {
     const id = param(req); const project = o.repo.getProject(id);
-    return { project, jobs: o.repo.jobs(id), artifacts: o.repo.artifacts(id).map(({ path: _path, ...a }) => ({ ...a, url: `/api/artifacts/${a.id}` })), events: o.repo.events(id) };
+    return { project, jobs: o.repo.jobs(id), artifacts: o.repo.artifacts(id).map(({ path: _path, ...a }) => ({ ...a, url: `/api/artifacts/${a.id}` })), events: o.repo.events(id), ...(o.characters ? { characterLibrary: o.repo.characters.snapshot(id), portraitJobs: o.characters.jobs.list(id) } : {}) };
   });
-  app.post('/api/projects/:id/plan', async req => o.workflow.plan(param(req), revision.parse(req.body).revision));
+  app.post('/api/projects/:id/plan', async req => { const id = param(req); o.characters?.assertIdle(id); return o.workflow.plan(id, revision.parse(req.body).revision); });
   app.put('/api/projects/:id/storyboard', async req => {
     const id = param(req); if (o.repo.getProject(id).status === 'planning') throw new AppError(409, '正在规划，请等待完成');
+    o.characters?.assertIdle(id);
     const input = revision.extend({ storyboard: z.unknown() }).parse(req.body); return o.repo.saveStoryboard(id, input.revision, input.storyboard);
   });
   app.get('/api/projects/:id/estimate', async req => o.workflow.estimate(param(req)));
@@ -49,6 +52,7 @@ export async function createApp(o: Options) {
     if ((req.query as { download?: string }).download === '1') reply.header('Content-Disposition', `attachment; filename="story-${artifact.id}.${artifact.kind === 'image' ? 'png' : 'mp4'}"`);
     return reply.type(artifact.mime).header('Cache-Control', 'private, max-age=3600').sendFile(rel, resolve(o.dataRoot));
   });
+  if (o.characters) await registerCharacters(app, o.characters);
   if (o.staticRoot) {
     app.get('/', async (_req, reply) => reply.type('text/html').sendFile('index.html', resolve(o.staticRoot!)));
     app.get('/assets/*', async (req, reply) => reply.sendFile(`assets/${(req.params as { '*': string })['*']}`, resolve(o.staticRoot!)));

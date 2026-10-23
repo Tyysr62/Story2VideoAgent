@@ -2,8 +2,14 @@ import { describe, test, expect } from 'vitest';
 import { PiDirector } from '../src/director/pi-director.js';
 import { scriptedStream, failedStream } from './scripted-model.js';
 import { board } from './fixtures.js';
+import type { CharacterLibrary } from '../src/domain/characters.js';
 
 describe('actual Pi SDK with an injected offline model transport', () => {
+  test('rejects newly invented identity IDs when the project has registered characters', async () => {
+    const registered: CharacterLibrary = { revision: 1, approval: null, characters: [{ id: 'registered-fox', name: '小狐狸', aliases: [], description: '橙色狐狸', looks: [{ id: 'look-fox', name: '默认', selectedVersionId: 'version-fox', versions: [{ id: 'version-fox', description: '蓝围巾', imageAssetId: null, createdAt: 'now' }] }] }] };
+    const director = new PiDirector({ apiKey: 'offline-test', stream: scriptedStream(board()) });
+    await expect(director.plan('狐狸送信', undefined, registered)).rejects.toThrow(/角色|分镜/);
+  });
   test.each([401, 402, 429, 500])('reports provider HTTP %i distinctly from invalid storyboard, without raw errors', async status => {
     const d = new PiDirector({ apiKey: 'do-not-expose', stream: failedStream(`${status} provider error containing do-not-expose and private response body`) });
     let error: Error | undefined; try { await d.plan('故事'); } catch (e) { error = e as Error; }

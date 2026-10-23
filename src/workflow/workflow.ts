@@ -16,7 +16,7 @@ export class Workflow {
     const p = this.repo.getProject(id); this.repo.assertRevision(p, revision);
     if (['generating', 'planning'].includes(p.status)) throw new AppError(409, '项目正在处理，请等待当前任务完成');
     this.repo.updateProject(id, { status: 'planning', approvedRevision: null, error: null }); this.repo.event(id, 'planning.started', { revision });
-    try { const board = await this.planner.plan(p.story); return this.repo.saveStoryboard(id, revision, board); }
+    try { const board = await this.planner.plan(p.story, undefined, p.workflowVersion === 2 ? this.repo.characters.snapshot(id) : undefined); return this.repo.saveStoryboard(id, revision, board, true); }
     catch (e) {
       const message = e instanceof AppError ? e.message : '分镜规划失败，请重试';
       const current = this.repo.getProject(id);
@@ -30,6 +30,7 @@ export class Workflow {
   }
   async start(id: string, revision: number): Promise<Project> {
     let p = this.repo.getProject(id); this.repo.assertRevision(p, revision);
+    if (p.workflowVersion === 2) throw new AppError(409, 'V2 首帧驱动视频将在 M2 开放；当前仅交付角色库与引用，不会提交视频费用');
     if (p.status === 'planning') throw new AppError(409, '正在重新规划，请等待并确认新分镜');
     if (!p.storyboard || p.approvedRevision !== revision) throw new AppError(409, '请先确认当前版本的分镜');
     if (p.status === 'ready' || this.active.has(id)) return p;

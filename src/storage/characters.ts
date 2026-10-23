@@ -47,8 +47,17 @@ export class CharacterStore {
       this.editable(projectId);
       const library = this.snapshot(projectId);
       if (library.revision !== revision) throw new AppError(409, '角色库版本已变化，请刷新后重试');
+      const previousHash = this.manifestHash(projectId, library);
       fn(library); validateLibraryLabels(library.characters);
-      if (library.approval && library.approval.manifestHash !== this.manifestHash(projectId, library)) library.approval = null;
+      const changed = previousHash !== this.manifestHash(projectId, library);
+      if (changed) {
+        library.approval = null;
+        const project = this.project(projectId);
+        if (project.workflowVersion === 2 && project.approvedRevision !== null) {
+          project.approvedRevision = null; project.status = project.storyboard ? 'awaiting_approval' : 'draft';
+          this.db.prepare('UPDATE projects SET payload=? WHERE id=?').run(JSON.stringify(project), projectId);
+        }
+      }
       library.revision++; this.write(projectId, library); return library;
     });
   }
@@ -134,6 +143,30 @@ export class CharacterStore {
     if (shots.length) throw new AppError(409, `角色或造型已被镜头引用：${shots.join('、')}`);
   }
   resolveReferences(projectId: string, text: string) { return resolveCharacterReferences(text, this.snapshot(projectId)); }
+  /** Called only by Repository while committing a planner result or explicit V1 upgrade. */
+  adoptPlan(projectId: string, storyboard: Storyboard): Storyboard {
+    const library = this.raw(projectId);
+    if (!library.characters.length && storyboard.characters.length) {
+      library.characters = storyboard.characters.map(c => {
+        const data = characterInputSchema.parse({ name: c.name, description: c.description });
+        const version = { id: randomUUID(), description: data.description, imageAssetId: null, createdAt: stamp() };
+        return { ...data, id: c.id, looks: [{ id: randomUUID(), name: '默认', default: true, selectedVersionId: version.id, versions: [version] }] };
+      });
+      validateLibraryLabels(library.characters); library.revision++; library.approval = null; this.write(projectId, library);
+    }
+    const ids = new Set(library.characters.map(c => c.id));
+    if (storyboard.characters.some(c => !ids.has(c.id))) throw new AppError(409, '规划引用了未登记角色，请先在角色库创建该身份');
+    const shots = storyboard.shots.map(shot => {
+      if (shot.characterIds.some(id => !ids.has(id))) throw new AppError(400, '规划引用了未知角色 ID');
+      const refs = shot.characterRefs ?? shot.characterIds.map(id => {
+        const c = library.characters.find(c => c.id === id)!; const choices = c.looks.length === 1 ? c.looks : c.looks.filter(l => l.default);
+        if (choices.length !== 1) throw new AppError(409, `角色 ${c.name} 有多个造型，请选择默认造型或在分镜中明确引用`);
+        return { characterId: id, lookId: choices[0].id, lookVersionId: choices[0].selectedVersionId };
+      });
+      return { ...shot, characterIds: [...new Set(refs.map(r => r.characterId))], characterRefs: refs };
+    });
+    return { ...storyboard, characters: library.characters.map(c => ({ id: c.id, name: c.name, description: c.description })), shots };
+  }
   validateStoryboard(projectId: string, storyboard: Storyboard, forApproval = false) {
     const library = this.snapshot(projectId);
     for (const shot of storyboard.shots) {
