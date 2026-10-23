@@ -14,8 +14,8 @@
 ## 模块 B：应用配置与操作说明
 - [x] src/server/main.ts 切换工厂；M2 和视频界面配置提示同时覆盖 OSS/S3。
 - [x] .env.example 与 README 加入 OSS 字段、公网 endpoint、权限及私有签名说明。说明本地仍保留完整素材，OSS 仅用于云端传输。
-- [ ] 全量 verify、独立代码审查通过；本地主工作区合并、安装依赖及重新构建。
-- [ ] 仅写入用户已提供的地域、endpoint、bucket 与供应商选择，预留空凭据字段；保留现有密钥。检查原项目/素材不变后重启。
-- [ ] 汇报需要用户本地填写的密钥字段。未配置凭据时不声称真实联通，不调用付费生成；未获本次授权不推送 GitHub。
+- [x] 全量 verify、独立代码审查通过；本地主工作区合并、安装依赖及重新构建。
+- [x] 仅写入用户已提供的地域、endpoint、bucket 与供应商选择，预留空凭据字段；保留现有密钥。检查原项目/素材不变后重启。
+- [x] 汇报需要用户本地填写的密钥字段。未配置凭据时不声称真实联通，不调用付费生成；未获本次授权不推送 GitHub。
 
 来源：[OSS Node.js 初始化](https://www.alibabacloud.com/help/en/oss/initialization-10)、[V4 签名 URL](https://www.alibabacloud.com/help/en/oss/developer-reference/add-signatures-to-urls)、[官方 SDK 6.23.0](https://github.com/ali-sdk/ali-oss)。
