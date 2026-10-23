@@ -8,7 +8,7 @@ import { api, uploadPortrait } from './api.js';
 interface Props {
   projectId: string; library: CharacterLibrary; storyboard: Storyboard | null; jobs: PortraitJob[];
   disabled: boolean; boardDirty: boolean; simulated: boolean; onChanged(): Promise<unknown>; onError(message: string): void;
-  imageModel: string; onBusyChange(busy: boolean): void; onDraftChange?(dirty: boolean): void;
+  imageModel: string; imageResolution: string; onBusyChange(busy: boolean): void; onDraftChange?(dirty: boolean): void;
 }
 export function Characters(props: Props) {
   const { projectId, library } = props;
@@ -62,9 +62,14 @@ function LookCard(props: CardProps & { look: Look; identityDirty: boolean }) {
   const [description, setDescription] = useState(version.description); const [dirty, setDirty] = useState(false);
   const [editVersion, setEditVersion] = useState(version.id); const conflict = dirty && editVersion !== version.id;
   const [estimate, setEstimate] = useState<{ imageUsd: number | null; note?: string }>(); const [consent, setConsent] = useState(false);
+  const [mode, setMode] = useState('text'); const [referenceVersionId, setReferenceVersionId] = useState('');
+  const [editInstruction, setEditInstruction] = useState('');
+  const sources = character.looks.flatMap(sourceLook => sourceLook.versions.flatMap((v, index) => v.imageAssetId ? [{ lookId: sourceLook.id, lookName: sourceLook.name, version: v, number: index + 1 }] : []));
+  const source = sources.find(s => s.version.id === referenceVersionId);
+  const invalidateEstimate = () => { setConsent(false); setEstimate(undefined); };
   const [portraitError, setPortraitError] = useState(''); const [generating, setGenerating] = useState(false);
   useEffect(() => { props.reportDraft(`${character.id}:${look.id}`, dirty); return () => props.reportDraft(`${character.id}:${look.id}`, false); }, [dirty, character.id, look.id, props.reportDraft]);
-  useEffect(() => { if (!dirty) { setDescription(version.description); setEditVersion(version.id); } setConsent(false); setEstimate(undefined); }, [version.id]);
+  useEffect(() => { if (!dirty) { setDescription(version.description); setEditVersion(version.id); } setConsent(false); setEstimate(undefined); }, [version.id, library.revision, props.storyboard?.style]);
   const locked = props.locked || props.identityDirty; const base = `/projects/${projectId}/characters/${character.id}/looks/${look.id}`;
   const job = [...props.jobs].reverse().find(j => j.lookId === look.id && j.assetId === version.imageAssetId);
   const latestJob = [...props.jobs].reverse().find(j => j.lookId === look.id);
@@ -84,11 +89,18 @@ function LookCard(props: CardProps & { look: Look; identityDirty: boolean }) {
         <button disabled={locked || affected.length > 0} onClick={() => void run(() => api(base, 'DELETE', { revision: library.revision }))}>删除造型</button></div>
       <label className="upload-label">上传参考图<input type="file" accept="image/png,image/jpeg,image/webp" aria-label={`${character.name} ${look.name} 上传参考图`} disabled={locked || dirty} onChange={e => { const file = e.target.files?.[0]; e.target.value = ''; if (file) void run(() => uploadPortrait(`${base}/image`, library.revision, file)); }}/></label>
       <details className="portrait-controls"><summary>AI 生成候选图 · {props.simulated ? '离线测试' : 'OpenRouter API'}</summary>
-        <p className="muted">模型：{props.imageModel}。按已保存的身份、造型与全局画风生成一张单人图；生成后仍需你定稿。</p>
-        <button disabled={locked || dirty} onClick={() => void run(async () => { setEstimate(await api(`/projects/${projectId}/portrait-estimate`)); setConsent(false); })}>查询生图费用</button>
-        {estimate && <><p className="muted">{props.simulated ? '测试替身，不调用付费 API' : `单张预计 $${estimate.imageUsd?.toFixed(4) ?? '未知，请核实供应商价格'}`}。{estimate.note}</p><label className="checkbox-label"><input type="checkbox" checked={consent} disabled={locked || dirty} onChange={e => setConsent(e.target.checked)}/>我确认本次生图费用</label><button disabled={locked || dirty || !consent} onClick={() => void run(async () => {
+        <p className="muted">模型：{props.imageModel} · {props.imageResolution}。按已保存的身份、目标造型与全局画风生成一张单人图；生成后仍需你定稿。</p>
+        <label>生图方式<select aria-label="生图方式" value={mode} disabled={locked || dirty} onChange={e => { setMode(e.target.value); if (e.target.value === 'reference' && !source) setReferenceVersionId(sources.find(s => s.version.id === version.id)?.version.id ?? sources[0]?.version.id ?? ''); invalidateEstimate(); }}><option value="text">按文字生成新候选</option><option value="reference" disabled={!sources.length}>参考已有角色图修改</option></select></label>
+        {mode === 'reference' && <div className="portrait-reference">
+          <label>参考图版本<select aria-label="参考图版本" value={referenceVersionId} disabled={locked || dirty} onChange={e => { setReferenceVersionId(e.target.value); invalidateEstimate(); }}><option value="">请选择参考图版本</option>{sources.map(s => <option key={s.version.id} value={s.version.id}>{s.lookName} · V{s.number}{s.version.id === version.id ? ' · 当前版本' : ''}</option>)}</select></label>
+          {source ? <figure><img src={`/api/projects/${projectId}/character-images/${source.version.imageAssetId}`} alt={`本次生图参考：${character.name} ${source.lookName} V${source.number}`}/><figcaption>{character.name} · {source.lookName} · V{source.number}（固定参考版本）</figcaption></figure> : <p className="notice">参考版本已不可用，请重新选择。</p>}
+          <p className="muted">可引用同一角色其他年龄或造型的历史图片。原图作为身份依据，目标造型与修改要求决定本次变化；原图和历史版本保留。参考有助于一致性，仍需检查五官、年龄与服装。</p>
+        </div>}
+        <label>本次修改要求<textarea aria-label="本次修改要求" value={editInstruction} maxLength={2000} disabled={locked || dirty} onChange={e => { setEditInstruction(e.target.value); invalidateEstimate(); }} placeholder="例如：保留五官和脸型，只将头发改白、增加皱纹，穿蓝色外套"/></label>
+        <button disabled={locked || dirty || props.boardDirty || mode === 'reference' && !source} onClick={() => void run(async () => { setEstimate(await api(`/projects/${projectId}/portrait-estimate`)); setConsent(false); })}>查询生图费用</button>
+        {estimate && <><p className="muted">{props.simulated ? '测试替身，不调用付费 API' : `单张预计 $${estimate.imageUsd?.toFixed(4) ?? '未知，请核实供应商价格'}`}。{estimate.note}</p><label className="checkbox-label"><input type="checkbox" checked={consent} disabled={locked || dirty} onChange={e => setConsent(e.target.checked)}/>我确认本次生图费用</label><button disabled={locked || dirty || props.boardDirty || !consent || mode === 'reference' && !source} onClick={() => void run(async () => {
           setPortraitError(''); setGenerating(true);
-          try { const result = await api<PortraitJob>(`${base}/portrait`, 'POST', { revision: library.revision, requestId: crypto.randomUUID(), acceptCost: consent }); if (result.status !== 'succeeded') throw new Error(result.error ?? '角色图片生成未完成'); }
+          try { const result = await api<PortraitJob>(`${base}/portrait`, 'POST', { revision: library.revision, requestId: crypto.randomUUID(), acceptCost: consent, editInstruction, ...(mode === 'reference' && source ? { reference: { lookId: source.lookId, lookVersionId: source.version.id } } : {}) }); if (result.status !== 'succeeded') throw new Error(result.error ?? '角色图片生成未完成'); }
           catch (error) { setPortraitError(error instanceof Error ? error.message : '角色图片生成失败'); throw error; }
           finally { setConsent(false); setGenerating(false); }
         })}>生成角色候选图</button></>}

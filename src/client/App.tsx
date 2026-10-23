@@ -12,7 +12,7 @@ import { AudioEditor, VoiceProfiles } from './AudioEditor.js';
 
 type Asset = Omit<Artifact, 'path'> & { url: string };
 type Detail = { project: Project; jobs: Job[]; artifacts: Asset[]; events: ProjectEvent[]; characterLibrary?: CharacterLibrary; portraitJobs?: PortraitJob[] };
-type Config = { plannerConfigured: boolean; mediaConfigured: boolean; simulated: boolean; plannerModel: string; imageModel: string; videoModel: string; resolution: string; m2Enabled?: boolean };
+type Config = { plannerConfigured: boolean; mediaConfigured: boolean; simulated: boolean; plannerModel: string; imageModel: string; imageResolution: string; videoModel: string; resolution: string; m2Enabled?: boolean };
 type Estimate = { videoUsd: number | null; imageUsd: number | null; seconds: number; checkedAt?: string; note?: string; simulated?: boolean };
 const statuses: Record<string, string> = { draft: '草稿', planning: '规划中', awaiting_approval: '待确认', approved: '已确认', generating: '生成中', ready: '已成片', failed: '执行失败', queued: '等待', running: '执行中', succeeded: '完成', unknown: '状态待核实' };
 const kinds: Record<string, string> = { image: '图像', video: '视频', compose: '成片' };
@@ -89,7 +89,7 @@ export function App() {
           {project.error && <div className="notice error">{project.error}</div>}
           {project.status === 'planning' && <div className="panel progress-panel">导演正在规划角色、节奏和分镜，请稍候…</div>}
           {!draft && project.storyboard && <button onClick={() => void load(id!, true)}>载入最新分镜</button>}
-          {v2 && library && <Characters key={project.id} projectId={project.id} library={library} storyboard={draft} jobs={detail?.portraitJobs ?? []} disabled={locked} boardDirty={dirty} simulated={Boolean(config?.simulated)} imageModel={config?.imageModel ?? '待加载'} onBusyChange={setRoleBusy} onDraftChange={setRoleDraft} onChanged={() => load(project.id)} onError={setError}/>}
+          {v2 && library && <Characters key={project.id} projectId={project.id} library={library} storyboard={draft} jobs={detail?.portraitJobs ?? []} disabled={locked} boardDirty={dirty} simulated={Boolean(config?.simulated)} imageModel={config?.imageModel ?? '待加载'} imageResolution={config?.imageResolution ?? '待加载'} onBusyChange={setRoleBusy} onDraftChange={setRoleDraft} onChanged={() => load(project.id)} onError={setError}/>}
           {draft && <>
             <section className="board-meta panel"><label>故事标题<input aria-label="故事标题" value={draft.title} disabled={locked} onChange={e => edit(b => { b.title = e.target.value; })}/></label><label>视觉风格<input aria-label="视觉风格" value={draft.style} disabled={locked} onChange={e => edit(b => { b.style = e.target.value; })}/></label><div className="characters"><span className="muted">角色设定</span>{(v2 && library ? library.characters : draft.characters).map(c => <span key={c.id} title={c.description}>{c.name}<small>{c.description}</small></span>)}</div></section>
             {v2 && library && <button disabled={locked} onClick={() => edit(b => { for (const shot of b.shots) { shot.characterRefs = (shot.characterRefs ?? []).map(ref => { const c = library.characters.find(c => c.id === ref.characterId); const look = c?.looks.find(l => l.id === ref.lookId); return look ? { ...ref, lookVersionId: look.selectedVersionId } : ref; }); shot.characterIds = [...new Set(shot.characterRefs.map(r => r.characterId))]; } })}>更新镜头引用到当前造型版本</button>}

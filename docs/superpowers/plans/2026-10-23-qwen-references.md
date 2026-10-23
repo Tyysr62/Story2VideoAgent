@@ -17,9 +17,9 @@
 - [x] 运行角色、生产库及适配器测试和 `npm run check`，通过后进入 C。
 
 ## 模块 C：角色参考选择与预览
-- [ ] 在 tests/e2e/characters.spec.ts 增加上传原图→新建年龄造型→选择原图版本→输入修改要求→确认费用生成→保留历史及生产记录的浏览器测试，先确认入口缺失失败。
-- [ ] 修改 src/client/Characters.tsx、characters.css、App.tsx、src/server/main.ts：显式选择纯文字或参考编辑，显示来源预览，输入或参考变化撤销费用确认；显示配置分辨率；离线模式支持流程替身且明确标注。
-- [ ] 运行角色浏览器测试，通过后联调。
+- [x] 在 tests/e2e/characters.spec.ts 增加上传原图→新建年龄造型→选择原图版本→输入修改要求→确认费用生成→保留历史及生产记录的浏览器测试，先确认入口缺失失败。
+- [x] 修改 src/client/Characters.tsx、characters.css、App.tsx、src/server/main.ts：显式选择纯文字或参考编辑，显示来源预览，输入或参考变化撤销费用确认；显示配置分辨率；离线模式支持流程替身且明确标注。
+- [x] 运行角色浏览器测试，通过后联调。
 
 ## 联调与交付
 - [ ] `npm run verify` 全部通过，使用 requesting-code-review 技能审查，修复实际问题。

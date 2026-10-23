@@ -5,7 +5,7 @@ import { Repository } from '../storage/repository.js';
 import { Workflow } from '../workflow/workflow.js';
 import { PiDirector } from '../director/pi-director.js';
 import { FfmpegComposer, MockMedia } from '../media/ffmpeg.js';
-import { OpenRouterMedia, DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL } from '../media/openrouter.js';
+import { OpenRouterMedia, DEFAULT_IMAGE_MODEL, DEFAULT_IMAGE_RESOLUTION, DEFAULT_VIDEO_MODEL } from '../media/openrouter.js';
 import { createApp } from './app.js';
 import { resolveDirectorConfig } from '../config/providers.js';
 import { CharacterService } from '../characters/service.js';
@@ -28,11 +28,11 @@ if (demo) {
 const media = demo ? new MockMedia() : new OpenRouterMedia({ apiKey: orKey, videoModel: process.env.VIDEO_MODEL, imageModel: process.env.IMAGE_MODEL, resolution: process.env.VIDEO_RESOLUTION || '480p', imageResolution: process.env.IMAGE_RESOLUTION, diagnosticRoot: join(root, 'diagnostics') });
 const workflow = new Workflow(repo, planner, media, new FfmpegComposer(), root);
 const m2 = new M2Service(repo, root, media, new FfmpegComposer(), demo ? undefined : new ObjectStorage());
-const characters = new CharacterService(repo, root, demo ? { simulated: true, portrait: (prompt, output) => media.image({ id: 'portrait-fixture', title: '测试角色图', description: prompt, camera: '正面', imagePrompt: prompt, videoPrompt: prompt, duration: 1, characterIds: [] }, output) } : media as OpenRouterMedia);
+const characters = new CharacterService(repo, root, demo ? { simulated: true, validatePortraitReference: async () => ({}), portrait: (prompt, output) => media.image({ id: 'portrait-fixture', title: '测试角色图', description: prompt, camera: '正面', imagePrompt: prompt, videoPrompt: prompt, duration: 1, characterIds: [] }, output) } : media as OpenRouterMedia);
 const app = await createApp({ repo, workflow, characters, m2, dataRoot: root, staticRoot: resolve('dist'), publicConfig: {
   plannerConfigured: demo || Boolean(director.apiKey), mediaConfigured: demo || Boolean(orKey), simulated: demo,
   plannerProvider: demo ? 'offline-fixture' : director.provider,
-  plannerModel: demo ? 'Pi 脚本模型替身（非真实 AI）' : director.model, imageModel: demo ? '测试色卡' : process.env.IMAGE_MODEL || DEFAULT_IMAGE_MODEL,
+  plannerModel: demo ? 'Pi 脚本模型替身（非真实 AI）' : director.model, imageModel: demo ? '测试色卡' : process.env.IMAGE_MODEL || DEFAULT_IMAGE_MODEL, imageResolution: demo ? '测试色卡尺寸' : process.env.IMAGE_RESOLUTION || DEFAULT_IMAGE_RESOLUTION,
   videoModel: demo ? '测试片段' : process.env.VIDEO_MODEL || DEFAULT_VIDEO_MODEL, resolution: process.env.VIDEO_RESOLUTION || '480p', maxShots: 20, characterLibraryEnabled: true, m2Enabled: true,
 } });
 await characters.recover();
