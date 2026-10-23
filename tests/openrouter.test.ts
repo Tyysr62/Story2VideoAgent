@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { test, expect } from 'vitest';
 import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -35,7 +36,7 @@ test('user-selected Qwen Turbo and HeyGen defaults use compatible resolution and
       if (url.endsWith('/videos/models')) return Response.json({ data: [{ ...catalog.data[0], pricing_skus: { duration_seconds_480p: '0.02' } }] });
       return Response.json({ data: [{ b64_json: 'iVBORw0KGgo=', media_type: 'image/png' }] });
     } });
-    expect(media.portraitConfig()).toMatchObject({ model: DEFAULT_IMAGE_MODEL, parameters: { resolution: '1K', aspect_ratio: '1:1' } });
+    expect(media.portraitConfig()).toMatchObject({ model: DEFAULT_IMAGE_MODEL, parameters: { resolution: '2K', aspect_ratio: '1:1' } });
     expect((await media.estimatePortrait()).imageUsd).toBeCloseTo(0.0184);
     const b = board(); b.shots.forEach(s => s.duration = 5);
     expect(await media.estimate(b)).toMatchObject({ videoUsd: 0.2, imageUsd: 0.0368 });
@@ -43,8 +44,8 @@ test('user-selected Qwen Turbo and HeyGen defaults use compatible resolution and
     await media.image(b.shots[0], join(root, 'shot.png'));
     const bodies = requests.filter(r => r.init?.method === 'POST').map(r => JSON.parse(String(r.init?.body)));
     expect(bodies).toEqual([
-      { model: DEFAULT_IMAGE_MODEL, prompt: '单人角色图', resolution: '1K', aspect_ratio: '1:1', n: 1 },
-      { model: DEFAULT_IMAGE_MODEL, prompt: b.shots[0].imagePrompt, resolution: '1K', aspect_ratio: '16:9', n: 1 },
+      { model: DEFAULT_IMAGE_MODEL, prompt: '单人角色图', resolution: '2K', aspect_ratio: '1:1', n: 1 },
+      { model: DEFAULT_IMAGE_MODEL, prompt: b.shots[0].imagePrompt, resolution: '2K', aspect_ratio: '16:9', n: 1 },
     ]);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
@@ -149,9 +150,9 @@ test('reference-conditioned keyframes pin a capable endpoint and transmit ordere
       return Response.json({ data: [{ b64_json: 'iVBORw0KGgo=', media_type: 'image/png' }] });
     } });
     await expect(media.validateKeyframe(5)).rejects.toThrow(/参考|支持/); expect(requests.every(r => r.init?.method !== 'POST')).toBe(true);
-    await media.keyframe({ prompt: '参考图 1 为爷爷', references: [{ assetId: 'a', path: join(root, 'ref.png'), mime: 'image/png', sha256: 'fixture' }] }, join(root, 'frame.png'));
+    await media.keyframe({ prompt: '参考图 1 为爷爷', references: [{ assetId: 'a', path: join(root, 'ref.png'), mime: 'image/png', sha256: createHash('sha256').update('reference-pixels').digest('hex') }] }, join(root, 'frame.png'));
     const post = JSON.parse(String(requests.find(r => r.init?.method === 'POST')?.init?.body));
-    expect(post).toMatchObject({ model: DEFAULT_IMAGE_MODEL, resolution: '1K', aspect_ratio: '16:9', provider: { only: ['alibaba'], allow_fallbacks: false } });
+    expect(post).toMatchObject({ model: DEFAULT_IMAGE_MODEL, resolution: '2K', aspect_ratio: '16:9', provider: { only: ['alibaba'], allow_fallbacks: false } });
     expect(post.input_references).toEqual([{ type: 'image_url', image_url: { url: `data:image/png;base64,${Buffer.from('reference-pixels').toString('base64')}` } }]);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
@@ -170,4 +171,32 @@ test('image-to-video sends first_frame and prices reference generation instead o
     await media.video(b.shots[0], join(root, 'v.mp4'), { firstFrameUrl: 'https://bucket.example/frame.png?signed=fixture', persistTaskId() {} });
     const post = JSON.parse(String(requests.find(r => r.init?.method === 'POST')?.init?.body)); expect(post.frame_images).toEqual([{ type: 'image_url', image_url: { url: 'https://bucket.example/frame.png?signed=fixture' }, frame_type: 'first_frame' }]);
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+
+test('portrait reference editing pins a square-capable provider and rejects changed source bytes before billing', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'portrait-ref-')); const posts: any[] = []; let supported = true;
+  try {
+    const path = join(root, 'ref.png'); await import('node:fs/promises').then(fs => fs.writeFile(path, 'original'));
+    const reference = { assetId: 'source', path, mime: 'image/png', sha256: createHash('sha256').update('original').digest('hex') };
+    const media = new OpenRouterMedia({ apiKey: 'fixture', fetcher: async (_, init) => {
+      if (init?.method !== 'POST') return Response.json({ endpoints: [{ provider_tag: 'alibaba', supported_parameters: {
+        resolution: { values: ['2K'] }, aspect_ratio: { values: supported ? ['1:1'] : ['16:9'] }, n: { min: 1, max: 6 }, input_references: { type: 'range', min: 0, max: 4 }
+      } }] });
+      posts.push(JSON.parse(String(init.body))); return Response.json({ data: [{ b64_json: 'iVBORw0KGgo=', media_type: 'image/png' }] });
+    } });
+    await media.portrait('same person, winter coat', join(root, 'out.png'), reference);
+    expect(posts[0]).toMatchObject({ resolution: '2K', aspect_ratio: '1:1', provider: { only: ['alibaba'], allow_fallbacks: false }, input_references: [{ type: 'image_url', image_url: { url: `data:image/png;base64,${Buffer.from('original').toString('base64')}` } }] });
+    supported = false;
+    await expect(media.portrait('edit', join(root, 'out.png'), reference)).rejects.toThrow(/支持/);
+    supported = true; await import('node:fs/promises').then(fs => fs.writeFile(path, 'modified'));
+    await expect(media.portrait('edit', join(root, 'out.png'), reference)).rejects.toThrow(/摘要|修改|校验/);
+    expect(posts).toHaveLength(1);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('an explicit 1K override is retained for image and portrait configuration', () => {
+  const media = new OpenRouterMedia({ apiKey: 'fixture', imageResolution: '1K' });
+  expect(media.portraitConfig().parameters.resolution).toBe('1K');
+  expect(media.generationConfig('image').parameters.resolution).toBe('1K');
 });

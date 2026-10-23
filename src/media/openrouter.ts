@@ -1,16 +1,16 @@
 import { mkdir, writeFile, readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { AppError, type Storyboard } from '../domain/storyboard.js';
 import type { MediaBackend, TaskContext } from './ffmpeg.js';
-import type { KeyframeInput } from '../production/m2.js';
+import type { KeyframeInput, ReferenceImage } from '../production/m2.js';
 import { VIDEO_PROMPT_VERSION } from './video-prompt.js';
 import { COMPOSE_PARAMETERS } from './ffmpeg.js';
 
 export const DEFAULT_VIDEO_MODEL = 'heygen/heygen-video-1';
 export const DEFAULT_IMAGE_MODEL = 'qwen/qwen-image-2.1-turbo';
-export const DEFAULT_IMAGE_RESOLUTION = '1K';
+export const DEFAULT_IMAGE_RESOLUTION = '2K';
 export class UncertainSubmission extends AppError { readonly uncertain = true; constructor() { super(409, '云端提交状态未知，已阻止自动重复提交；请先到 OpenRouter 核实，避免重复扣费'); } }
 export class ProviderFailed extends AppError { readonly terminal = true; constructor() { super(502, 'OpenRouter 已确认生成失败，可确认后重新尝试'); } }
 interface Options { apiKey: string; videoModel?: string; imageModel?: string; resolution?: string; imageResolution?: string; baseUrl?: string; fetcher?: typeof fetch; pollMs?: number; maxPolls?: number; diagnosticRoot?: string; }
@@ -101,23 +101,33 @@ export class OpenRouterMedia implements MediaBackend {
   async image(shot: Storyboard['shots'][number], output: string) {
     return this.generateImage(shot.imagePrompt, output, '16:9');
   }
-  async portrait(prompt: string, output: string) { return this.generateImage(prompt, output, '1:1'); }
-  async validateKeyframe(references: number) {
+  async portrait(prompt: string, output: string, reference?: ReferenceImage) {
+    if (!reference) return this.generateImage(prompt, output, '1:1');
+    const routing = await this.validatePortraitReference();
+    const encoded = await this.encodeReference(reference);
+    return this.generateImage(prompt, output, '1:1', { ...routing, input_references: [encoded] });
+  }
+  async validatePortraitReference() { return this.validateImageInputs(1, '1:1'); }
+  async validateKeyframe(references: number) { return this.validateImageInputs(references, '16:9'); }
+  private async validateImageInputs(references: number, aspectRatio: string) {
     const result = await this.json(`/images/models/${this.imageModel}/endpoints`);
     const endpoint = (result.endpoints ?? []).find((e: any) => {
       const p = e.supported_parameters ?? {}; const r = p.input_references;
-      return p.resolution?.values?.includes(this.options.imageResolution || DEFAULT_IMAGE_RESOLUTION) && p.aspect_ratio?.values?.includes('16:9') && p.n?.min <= 1 && p.n?.max >= 1 && (references === 0 || r?.type === 'range' && r.min <= references && r.max >= references) && (result.endpoints.length === 1 || e.provider_tag);
+      return p.resolution?.values?.includes(this.options.imageResolution || DEFAULT_IMAGE_RESOLUTION) && p.aspect_ratio?.values?.includes(aspectRatio) && p.n?.min <= 1 && p.n?.max >= 1 && (references === 0 || r?.type === 'range' && r.min <= references && r.max >= references) && (result.endpoints.length === 1 || e.provider_tag);
     });
     if (!endpoint) throw new AppError(400, `当前图像端点不支持 ${references} 张参考图或所选画幅、分辨率，请调整输入；未提交生图费用`);
     return { provider: { ...(endpoint.provider_tag ? { only: [endpoint.provider_tag] } : {}), allow_fallbacks: false } };
   }
   async keyframe(input: KeyframeInput, output: string) {
     const routing = await this.validateKeyframe(input.references.length);
-    const references = await Promise.all(input.references.map(async r => {
-      const bytes = await readFile(r.path); if (bytes.length > 10 * 1024 * 1024 || !['image/png', 'image/jpeg', 'image/webp'].includes(r.mime)) throw new AppError(400, '参考图类型或大小不受支持');
-      return { type: 'image_url', image_url: { url: `data:${r.mime};base64,${bytes.toString('base64')}` } };
-    }));
+    const references = await Promise.all(input.references.map(r => this.encodeReference(r)));
     return this.generateImage(input.prompt, output, '16:9', { ...routing, ...(references.length ? { input_references: references } : {}) });
+  }
+  private async encodeReference(reference: ReferenceImage) {
+    const bytes = await readFile(reference.path);
+    if (bytes.length > 10 * 1024 * 1024 || !['image/png', 'image/jpeg', 'image/webp'].includes(reference.mime)) throw new AppError(400, '参考图类型或大小不受支持');
+    if (createHash('sha256').update(bytes).digest('hex') !== reference.sha256) throw new AppError(409, '参考图摘要校验失败，未提交生图费用');
+    return { type: 'image_url', image_url: { url: `data:${reference.mime};base64,${bytes.toString('base64')}` } };
   }
   portraitConfig() { return { model: this.imageModel, parameters: { resolution: this.options.imageResolution || DEFAULT_IMAGE_RESOLUTION, aspect_ratio: '1:1', n: 1 } }; }
   generationConfig(kind: 'image' | 'video' | 'compose') { return kind === 'image' ? { model: this.imageModel, parameters: { resolution: this.options.imageResolution || DEFAULT_IMAGE_RESOLUTION, aspect_ratio: '16:9', n: 1 } } : kind === 'video' ? { model: this.videoModel, parameters: { resolution: this.resolution, aspect_ratio: '16:9', audioStrategy: this.videoModel === DEFAULT_VIDEO_MODEL ? 'heygen-native-default' : 'catalogue-gated', promptVersion: VIDEO_PROMPT_VERSION } } : { model: 'ffmpeg', parameters: { ...COMPOSE_PARAMETERS } }; }
