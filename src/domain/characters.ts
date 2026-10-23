@@ -26,7 +26,8 @@ export interface ImageAsset {
 }
 
 // Names exclude mention delimiters so every accepted label can be entered as @name·look.
-export const labelSchema = z.string().trim().min(1).max(100).regex(/^[^\s@·，。！？、,!?;；:：()（）]+$/u);
+export const CHARACTER_LABEL_PATTERN = /^[^\s@·，。！？、,!?;；:：()（）]+$/u;
+export const labelSchema = z.string().trim().min(1).max(100).regex(CHARACTER_LABEL_PATTERN);
 export const descriptionSchema = z.string().trim().min(1).max(2000);
 export const characterInputSchema = z.object({ name: labelSchema, aliases: z.array(labelSchema).max(100).default([]), description: descriptionSchema }).strict();
 export const characterPatchSchema = characterInputSchema.partial();

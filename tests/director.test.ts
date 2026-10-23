@@ -61,3 +61,23 @@ describe('actual Pi SDK with an injected offline model transport', () => {
     await expect(d.plan('故事', AbortSignal.abort())).rejects.toThrow(/取消/);
   });
 });
+
+
+test('V2 rejects mention-incompatible character names before accepting a model proposal', async () => {
+  const invalid = board(1); invalid.characters[0].name = '陈伯（老年）';
+  const director = new PiDirector({ apiKey: 'offline-test', stream: scriptedStream(invalid) });
+  await expect(director.plan('旧信故事', undefined, { revision: 0, characters: [], approval: null })).rejects.toThrow(/角色名称|有效分镜/);
+});
+
+test('V2 tool feedback lets the model repair a character label and returns only the corrected plan', async () => {
+  const invalid = board(1); invalid.characters[0].name = '陈伯（老年）'; const corrected = board(1); corrected.characters[0].name = '陈伯';
+  const first = scriptedStream(invalid); const repair = scriptedStream(corrected); let calls = 0; let system = ''; let schema = ''; let sawRejection = false;
+  const director = new PiDirector({ apiKey: 'offline-test', stream: (...args) => {
+    schema = JSON.stringify(args[1].tools ?? getDeclaredTools(args[1].messages));
+    if (calls === 1) sawRejection = args[1].messages.some(m => m.role === 'toolResult' && m.isError);
+    return calls++ === 0 ? first(...args) : repair(...args);
+  } });
+  const result = await director.plan('旧信故事', undefined, { revision: 0, characters: [], approval: null }, trace => { system = trace.systemPrompt; });
+  expect(result.characters[0].name).toBe('陈伯'); expect(calls).toBe(3); expect(sawRejection).toBe(true);
+  expect(system).toContain('角色名称'); expect(system).toContain('括号'); expect(schema).toContain('pattern');
+});

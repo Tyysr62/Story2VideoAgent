@@ -1,4 +1,5 @@
 import { readFile, stat, mkdir } from 'node:fs/promises';
+import { ZodError } from 'zod';
 import { existsSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -19,14 +20,26 @@ export class Workflow {
     if (['generating', 'planning'].includes(p.status)) throw new AppError(409, '项目正在处理，请等待当前任务完成');
     this.repo.updateProject(id, { status: 'planning', approvedRevision: null, error: null }); this.repo.event(id, 'planning.started', { revision });
     const planning = this.repo.production.create({ projectId: id, kind: 'prompt', label: 'AI 分镜规划输入', status: 'running', prompt: p.story, revision, content: { characterLibrary: p.workflowVersion === 2 ? this.repo.characters.snapshot(id) : undefined } });
-    let traceId: string | undefined;
-    try { const board = await this.planner.plan(p.story, undefined, p.workflowVersion === 2 ? this.repo.characters.snapshot(id) : undefined, trace => { traceId = this.repo.production.create({ projectId: id, kind: 'prompt', label: '导演实际请求 Prompt', status: 'running', revision, model: trace.model, prompt: trace.userPrompt, content: { systemPrompt: trace.systemPrompt }, dependencies: [planning.id] }).id; }); const saved = this.repo.saveStoryboard(id, revision, board, true); this.repo.production.update(id, planning.id, { status: 'succeeded', outputId: `board:${id}:r${saved.revision}` }); if (traceId) this.repo.production.update(id, traceId, { status: 'succeeded', outputId: `board:${id}:r${saved.revision}` }); return saved; }
-    catch (e) {
-      const message = e instanceof AppError ? e.message : '分镜规划失败，请重试';
+    let traceId: string | undefined; let outputId: string | undefined; let model: string | undefined;
+    try {
+      const board = await this.planner.plan(p.story, undefined, p.workflowVersion === 2 ? this.repo.characters.snapshot(id) : undefined, trace => {
+        model = trace.model;
+        traceId = this.repo.production.create({ projectId: id, kind: 'prompt', label: '导演实际请求 Prompt', status: 'running', revision, model, prompt: trace.userPrompt, content: { systemPrompt: trace.systemPrompt }, dependencies: [planning.id] }).id;
+      });
+      // Preserve the model result before role adoption or database validation can reject it.
+      outputId = this.repo.production.create({ projectId: id, kind: 'storyboard', label: '导演分镜输出', status: 'running', revision, model, content: board, dependencies: [traceId ?? planning.id] }).id;
+      const saved = this.repo.saveStoryboard(id, revision, board, true);
+      for (const entryId of [planning.id, traceId, outputId]) if (entryId) this.repo.production.update(id, entryId, { status: 'succeeded', outputId: `board:${id}:r${saved.revision}` });
+      return saved;
+    } catch (e) {
+      const failure = e instanceof ZodError ? new AppError(502, e.issues.some(issue => issue.path.at(-1) === 'name')
+        ? '模型分镜中的角色名称不符合引用规则，请使用不含空格、括号或分隔符的简短称呼后重新规划'
+        : '模型分镜未通过数据校验，请检查本次导演分镜输出后重新规划') : e;
+      const message = failure instanceof AppError ? failure.message : '分镜规划失败，请重试';
       const current = this.repo.getProject(id);
       if (current.revision === revision && current.status === 'planning') this.repo.updateProject(id, { status: 'failed', error: message });
-      this.repo.production.update(id, planning.id, { status: 'failed', error: message }); if (traceId) this.repo.production.update(id, traceId, { status: 'failed', error: message });
-      this.repo.event(id, 'planning.failed', { revision, message }); throw e instanceof AppError ? e : new AppError(502, message);
+      for (const entryId of [planning.id, traceId, outputId]) if (entryId) this.repo.production.update(id, entryId, { status: 'failed', error: message });
+      this.repo.event(id, 'planning.failed', { revision, message }); throw failure instanceof AppError ? failure : new AppError(502, message);
     }
   }
   async estimate(id: string) {
