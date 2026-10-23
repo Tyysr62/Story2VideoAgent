@@ -3,8 +3,20 @@ import { PiDirector } from '../src/director/pi-director.js';
 import { scriptedStream, failedStream } from './scripted-model.js';
 import { board } from './fixtures.js';
 import type { CharacterLibrary } from '../src/domain/characters.js';
+import { getDeclaredTools } from '@earendil-works/pi-ai';
 
 describe('actual Pi SDK with an injected offline model transport', () => {
+  test('exposes structured sound planning to Pi and normalizes missing legacy audio to silence', async () => {
+    let system = ''; let toolSchema = '';
+    const transport = scriptedStream(board(1));
+    const d = new PiDirector({ apiKey: 'offline-test', stream: (model, context, options) => {
+      toolSchema = JSON.stringify(context.tools ?? getDeclaredTools(context.messages)); return transport(model, context, options);
+    } });
+    const result = await d.plan('狐狸送信，不要强制旁白', undefined, undefined, trace => { system = trace.systemPrompt; });
+    expect(system).toContain('旁白'); expect(system).toContain('画外'); expect(system).toContain('声音');
+    expect(toolSchema).toContain('dialogue'); expect(toolSchema).toContain('narration'); expect(toolSchema).toContain('audioProfile');
+    expect(result.shots[0].audio).toMatchObject({ mode: 'silent', dialogue: [], narration: null });
+  });
   test('rejects newly invented identity IDs when the project has registered characters', async () => {
     const registered: CharacterLibrary = { revision: 1, approval: null, characters: [{ id: 'registered-fox', name: '小狐狸', aliases: [], description: '橙色狐狸', looks: [{ id: 'look-fox', name: '默认', selectedVersionId: 'version-fox', versions: [{ id: 'version-fox', description: '蓝围巾', imageAssetId: null, createdAt: 'now' }] }] }] };
     const director = new PiDirector({ apiKey: 'offline-test', stream: scriptedStream(board()) });

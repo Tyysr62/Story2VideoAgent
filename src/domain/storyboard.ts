@@ -1,18 +1,29 @@
 import { z } from 'zod';
+import { audioPlanSchema, audioProfileSchema } from './audio.js';
 
 export const MAX_SHOTS = 20;
 const text = z.string().trim().min(1).max(6000);
 const id = z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/);
 export const storyboardSchema = z.object({
   title: text.max(120), style: text.max(2000),
+  audioProfile: audioProfileSchema.optional(),
   characters: z.array(z.object({ id, name: text.max(100), description: text.max(2000) })).max(30),
   shots: z.array(z.object({ id, title: text.max(120), description: text, camera: text.max(1000),
-    imagePrompt: text, videoPrompt: text, duration: z.number().finite().positive(), characterIds: z.array(id).max(30),
+    imagePrompt: text, videoPrompt: text, duration: z.number().finite().positive(), characterIds: z.array(id).max(30), audio: audioPlanSchema.optional(),
     characterRefs: z.array(z.object({ characterId: id, lookId: id, lookVersionId: id }).strict()).max(30).optional() })).min(1).max(MAX_SHOTS),
 }).superRefine((b, ctx) => {
   const unique = (ids: string[], name: string) => { if (new Set(ids).size !== ids.length) ctx.addIssue({ code: 'custom', message: `${name} ID 重复` }); };
   unique(b.characters.map(c => c.id), '角色'); unique(b.shots.map(s => s.id), '镜头');
   const ids = new Set(b.characters.map(c => c.id));
+  const voices = b.audioProfile?.characterVoices ?? [];
+  unique(voices.map(v => v.characterId), '声音角色');
+  if (voices.some(v => !ids.has(v.characterId))) ctx.addIssue({ code: 'custom', path: ['audioProfile', 'characterVoices'], message: '声音设定引用了不存在的角色' });
+  b.shots.forEach((shot, i) => {
+    for (const [j, line] of (shot.audio?.dialogue ?? []).entries()) {
+      if (!ids.has(line.characterId)) ctx.addIssue({ code: 'custom', path: ['shots', i, 'audio', 'dialogue', j], message: '台词引用了不存在的角色' });
+      if (line.placement === 'on_screen' && !shot.characterIds.includes(line.characterId)) ctx.addIssue({ code: 'custom', path: ['shots', i, 'audio', 'dialogue', j], message: '画内说话角色必须出现在该镜头中，请绑定角色或改为画外发声' });
+    }
+  });
   b.shots.forEach((s, i) => { if (s.characterIds.some(x => !ids.has(x))) ctx.addIssue({ code: 'custom', path: ['shots', i, 'characterIds'], message: '引用了不存在的角色' }); });
 });
 export type Storyboard = z.infer<typeof storyboardSchema>;
