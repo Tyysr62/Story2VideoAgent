@@ -1,6 +1,7 @@
 import { config as dotenv } from 'dotenv';
 import { mkdir } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
+import { createServer } from 'node:net';
 import { Repository } from '../storage/repository.js';
 import { Workflow } from '../workflow/workflow.js';
 import { PiDirector } from '../director/pi-director.js';
@@ -15,6 +16,12 @@ import { MediaQueue, resolveConcurrency } from '../media/queue.js';
 
 dotenv({ path: '.env.local', quiet: true });
 const mediaQueue = new MediaQueue(resolveConcurrency(process.env));
+const host = '127.0.0.1'; const port = Number(process.env.PORT || 4310);
+// Reject an already occupied port before opening the live database or recovering jobs.
+await new Promise<void>((resolve, reject) => {
+  const probe = createServer(); probe.once('error', reject);
+  probe.listen({ host, port }, () => probe.close(error => error ? reject(error) : resolve()));
+});
 const demo = process.argv.includes('--demo');
 const root = resolve(process.env.STORY_AGENT_DATA_DIR || (demo ? './data/demo' : './data/live')); await mkdir(root, { recursive: true });
 const repo = new Repository(join(root, 'story.db'));
@@ -41,7 +48,7 @@ const app = await createApp({ repo, workflow, characters, m2, dataRoot: root, st
 await characters.recover();
 await m2.recover();
 await workflow.recover();
-await app.listen({ host: '127.0.0.1', port: Number(process.env.PORT || 4310) });
+await app.listen({ host, port });
 console.log(`Story Agent: http://127.0.0.1:${process.env.PORT || 4310}${demo ? ' [OFFLINE TEST FIXTURES — NOT AI MEDIA]' : ''}`);
 let stopping = false;
 for (const signal of ['SIGINT', 'SIGTERM'] as const) process.on(signal, async () => { if (stopping) return; stopping = true; await app.close(); await characters.idle(); await m2.idle(); await workflow.idle(); repo.close(); process.exit(0); });
