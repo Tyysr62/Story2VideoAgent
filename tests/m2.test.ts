@@ -109,19 +109,36 @@ test('a parallel failure stops unstarted videos, keeps the project busy while dr
   const gates = Array.from({ length: 4 }, gate); const started: string[] = []; const original = backend.video; let submits = 0;
   backend.video = async (shot, output, task) => { started.push(shot.id); if (!task!.providerTaskId) { submits++; task!.persistTaskId(`cloud-${shot.id}`); } await gates[shotIds.indexOf(shot.id)].promise; if (shot.id === 'shot-1') throw Error('poll timeout'); await original(shot, output, task); };
   const videos = new M2Service(repo, root, backend, new FfmpegComposer()); const manifestHash = videos.view(id).manifestHash;
+  const cleanup = gate(); const outputFile = (videos as any).outputFile.bind(videos);
+  vi.spyOn(videos as any, 'outputFile').mockImplementation(async (...args: unknown[]) => {
+    if (args[1] === 'application/octet-stream') { await cleanup.promise; throw Error('no partial output'); }
+    return outputFile(...args);
+  });
   let settled = false;
   const work = videos.videos(id, { revision: 2, shotIds, requestId: 'drain-videos', acceptCost: true, manifestHash }).finally(() => { settled = true; });
   try {
     await vi.waitFor(() => expect(started).toHaveLength(3)); gates[0].release();
     await vi.waitFor(() => expect(repo.production.list(id).find(e => e.providerTaskId === 'cloud-shot-1')?.status).toBe('failed'));
+    gates[1].release(); gates[2].release();
+    await vi.waitFor(() => expect(videos.view(id).shots.filter(s => s.videoCurrent)).toHaveLength(2));
+    expect([...started].sort()).toEqual(shotIds.slice(0, 3));
     expect(settled).toBe(false); expect(repo.getProject(id).status).toBe('generating');
     await expect(videos.videos(id, { revision: 2, shotIds: ['shot-2'], requestId: 'overlap', acceptCost: true, manifestHash })).rejects.toThrow(/正在生产/);
-  } finally { gates.forEach(g => g.release()); await work; }
+  } finally { gates.forEach(g => g.release()); cleanup.release(); await work; }
   expect([...started].sort()).toEqual(shotIds.slice(0, 3)); expect(repo.getProject(id).status).toBe('awaiting_approval');
   backend.video = async (shot, path, task) => { expect(task!.providerTaskId).toBe('cloud-shot-1'); await original(shot, path, task); };
   await videos.videos(id, { revision: 2, shotIds: ['shot-1'], requestId: 'resume-parallel', acceptCost: true, manifestHash });
   expect(submits).toBe(3); expect(videos.view(id).shots.slice(0, 3).every(s => s.videoCurrent)).toBe(true);
   expect(repo.production.list(id).filter(e => e.kind === 'video' && e.shotId === 'shot-1')).toHaveLength(1);
+});
+
+test('local directory failure closes parallel production records without any generation call', async () => {
+  const { root, service, id, repo, calls } = await setup(false, 4);
+  await mkdir(join(root, 'production'), { recursive: true }); await writeFile(join(root, 'production', id), 'blocked directory');
+  await service.frames(id, { revision: 2, shotIds: board(4).shots.map(s => s.id), requestId: 'disk-failure', acceptCost: true });
+  const entries = repo.production.list(id).filter(e => e.kind === 'keyframe');
+  expect(entries.length).toBeGreaterThan(0); expect(entries.every(e => e.status === 'failed')).toBe(true); expect(calls()).toBe(0);
+  expect(repo.getProject(id).status).toBe('awaiting_approval');
 });
 test('keyframes use role images, keep every candidate and prompt, and reject stale group approval', async () => {
   const { repo, service, id, calls } = await setup();

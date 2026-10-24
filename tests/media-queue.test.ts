@@ -39,3 +39,19 @@ test('validates configurable limits and supplies bounded defaults', () => {
   for (const value of ['0', '9', '-1', '1.5', 'NaN', '3oops', '']) expect(() => resolveConcurrency({ IMAGE_CONCURRENCY: value })).toThrow(/IMAGE_CONCURRENCY/);
   expect(() => new MediaQueue({ image: 0, video: 2 })).toThrow();
 });
+
+test('stops synchronously before slow failure cleanup allows another slot to free', async () => {
+  const queue = new MediaQueue({ image: 2, video: 2 }); const fail = deferred(), cleanup = deferred(), other = deferred();
+  const started: number[] = []; let stopping = false, otherFinished = false;
+  const work = queue.batch('image', [1, 2, 3, 4], async (n, _index, stop) => {
+    started.push(n);
+    if (n === 1) { await fail.promise; stop(); stopping = true; await cleanup.promise; return false; }
+    await other.promise; otherFinished = true;
+  });
+  try {
+    await vi.waitFor(() => expect(started).toEqual([1, 2])); fail.release(); await vi.waitFor(() => expect(stopping).toBe(true));
+    other.release(); await vi.waitFor(() => expect(otherFinished).toBe(true));
+    await queue.run('image', async () => {}); expect(started).toEqual([1, 2]);
+  } finally { fail.release(); cleanup.release(); other.release(); await work.catch(() => {}); }
+  await expect(work).resolves.toBe(false);
+});

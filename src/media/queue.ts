@@ -34,11 +34,11 @@ export class MediaQueue {
     this.pools = { image: new Pool(limits.image), video: new Pool(limits.video) };
   }
   run<T>(kind: MediaKind, work: () => Promise<T>) { return this.pools[kind].run(work); }
-  async batch<T>(kind: MediaKind, items: readonly T[], work: (item: T, index: number) => Promise<void | boolean>): Promise<boolean> {
+  async batch<T>(kind: MediaKind, items: readonly T[], work: (item: T, index: number, stop: () => void) => Promise<void | boolean>): Promise<boolean> {
     let stopped = false; let failure: { error: unknown } | undefined;
     await Promise.all(items.map((item, index) => this.run(kind, async () => {
       if (stopped) return;
-      try { if (await work(item, index) === false) stopped = true; }
+      try { if (await work(item, index, () => { stopped = true; }) === false) stopped = true; }
       catch (error) { stopped = true; failure ??= { error }; }
     })));
     if (failure) throw failure.error;

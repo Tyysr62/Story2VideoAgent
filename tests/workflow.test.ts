@@ -26,7 +26,10 @@ test('repeated start produces one job set and one final artifact', async () => {
 test('known failure can be manually retried without discarding completed jobs', async () => {
   let fail = true; const { w, r, id } = await setup(() => { if (fail) { fail = false; throw Error('injected'); } });
   r.approve(id, 1); await w.start(id, 1); await w.idle(id); expect(r.getProject(id).status).toBe('failed');
-  await w.start(id, 1); await w.idle(id); expect(r.getProject(id).status).toBe('ready'); expect(r.jobs(id)[0].attempts).toBe(2);
+  const failed = r.jobs(id).find(j => j.status === 'failed')!; expect(failed).toBeDefined();
+  const retained = r.jobs(id).filter(j => j.status === 'succeeded');
+  await w.start(id, 1); await w.idle(id); expect(r.getProject(id).status).toBe('ready'); expect(r.getJob(failed.id).attempts).toBe(2);
+  for (const job of retained) expect(r.getJob(job.id)).toMatchObject({ artifactId: job.artifactId, attempts: job.attempts });
 });
 test('unknown submission does not get automatically submitted a second time', async () => {
   let attempts = 0; const { w, r, id } = await setup(() => { attempts++; throw new UncertainSubmission(); });

@@ -81,20 +81,22 @@ export class M2Service {
       try {
         for (const c of compiled) { await this.media.validateKeyframe?.(c.references.length); for (const r of c.references) await this.files.file(id, `character:${r.assetId}`); }
         this.repo.m2.begin(id, input.requestId, requestHash);
-        await this.queue.batch('image', compiled, async c => {
+        await this.queue.batch('image', compiled, async (c, _index, stop) => {
           const state = this.repo.m2.get(id); const old = state.keyframes[c.shot.id] ? this.repo.production.get(id, state.keyframes[c.shot.id]) : undefined;
           if (!input.force && old?.inputHash === c.hash && old.status === 'succeeded') { await this.files.file(id, old.id); return; }
           const entry = this.repo.production.create({ projectId: id, kind: 'keyframe', label: `${c.shot.title} · 分镜首帧`, revision: p.revision, shotId: c.shot.id, status: 'running', prompt: c.prompt, model: c.config.model, parameters: c.config.parameters, dependencies: c.references.map(r => `character:${r.assetId}`), inputHash: c.hash, content: { roles: c.roles, references: c.references.map(({ path: _path, ...r }) => r), shot: c.shot }, simulated: this.media.simulated });
           this.repo.event(id, 'keyframe.started', { entryId: entry.id, shotId: c.shot.id });
-          const output = join(this.root, 'production', id, `${entry.id}.image`); await mkdir(dirname(output), { recursive: true });
-          this.repo.production.recordOutput(id, entry.id, relative(this.root, output));
+          const output = join(this.root, 'production', id, `${entry.id}.image`);
           try {
+            await mkdir(dirname(output), { recursive: true });
+            this.repo.production.recordOutput(id, entry.id, relative(this.root, output));
             await this.media.keyframe!({ prompt: c.prompt, references: c.references }, output);
             const bytes = await readFile(output); const mime = bytes[0] === 255 ? 'image/jpeg' : bytes.toString('ascii', 0, 4) === 'RIFF' ? 'image/webp' : 'image/png'; await validatePortrait(bytes, mime);
             this.repo.production.update(id, entry.id, { status: 'succeeded', file: { path: relative(this.root, output), mime, bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') } });
             const latest = this.repo.m2.get(id); latest.keyframes[c.shot.id] = entry.id; delete latest.approval; delete latest.finalId; this.repo.m2.save(id, latest); this.repo.updateProject(id, { finalArtifactId: null });
             this.repo.event(id, 'keyframe.succeeded', { entryId: entry.id, shotId: c.shot.id });
           } catch (error) {
+            stop();
             const partial = await readFile(output).catch(() => null); const unknown = error instanceof UncertainSubmission || (!this.media.simulated && Boolean(partial));
             const message = error instanceof AppError ? error.message : '首帧生成或保存失败';
             this.repo.production.update(id, entry.id, { status: unknown ? 'unknown' : 'failed', error: message, ...(partial?.length ? { file: { path: relative(this.root, output), mime: 'application/octet-stream', bytes: partial.length, sha256: createHash('sha256').update(partial).digest('hex') } } : {}) });
@@ -144,21 +146,23 @@ export class M2Service {
         for (const c of compiled) await this.files.file(id, c.frame.id);
         if (this.view(id).manifestHash !== manifestHash) throw new AppError(409, '生产输入已变化');
         this.repo.m2.begin(id, input.requestId, requestHash);
-        const succeeded = await this.queue.batch('video', compiled, async c => {
+        const succeeded = await this.queue.batch('video', compiled, async (c, _index, stop) => {
           const state = this.repo.m2.get(id); const existing = this.repo.production.list(id).filter(e => e.kind === 'video' && e.inputHash === c.hash);
           const selected = state.videos[c.shot.id] ? this.repo.production.get(id, state.videos[c.shot.id]) : undefined;
           if (!input.force && selected?.inputHash === c.hash && selected.status === 'succeeded') { await this.files.file(id, selected.id); return; }
           const resuming = [...existing].reverse().find(e => e.providerTaskId && !e.providerTerminal && e.status !== 'succeeded');
           const entry = resuming ?? this.repo.production.create({ projectId: id, kind: 'video', label: `${c.shot.title} · 首帧视频`, revision: p.revision, shotId: c.shot.id, status: 'running', prompt: c.prompt, model: c.config.model, parameters: { ...c.config.parameters, duration: c.shot.duration, frame_type: 'first_frame', promptVersion: VIDEO_PROMPT_VERSION, audioMode: c.shot.audio?.mode ?? 'silent' }, dependencies: [c.frame.id], inputHash: c.hash, content: { shot: c.shot, audioProfile: p.storyboard!.audioProfile, firstFrameSha: c.frame.file!.sha256, approvalHash: manifestHash }, simulated: this.media.simulated });
           this.repo.production.update(id, entry.id, { status: 'running', error: undefined }); this.repo.event(id, 'video.started', { entryId: entry.id, shotId: c.shot.id, resuming: Boolean(resuming) });
-          const output = join(this.root, 'production', id, `${entry.id}-${Date.now()}.mp4`); await mkdir(dirname(output), { recursive: true });
-          this.repo.production.recordOutput(id, entry.id, relative(this.root, output));
+          const output = join(this.root, 'production', id, `${entry.id}-${Date.now()}.mp4`);
           try {
+            await mkdir(dirname(output), { recursive: true });
+            this.repo.production.recordOutput(id, entry.id, relative(this.root, output));
             const firstFrameUrl = !entry.providerTaskId ? this.transport ? await this.transport.frame(c.frame, (await this.files.file(id, c.frame.id)).path) : this.media.simulated ? 'https://offline.invalid/fixture.png' : undefined : undefined;
             await this.media.video({ ...c.shot, videoPrompt: c.prompt }, output, { providerTaskId: entry.providerTaskId, firstFrameUrl, persistTaskId: providerTaskId => { this.repo.production.update(id, entry.id, { providerTaskId }); } });
             const info = await inspectMedia(output); if (c.shot.audio && c.shot.audio.mode !== 'silent' && !info.hasAudio) throw new MissingAudioTrack();
             this.repo.production.update(id, entry.id, { status: 'succeeded', file: await this.outputFile(output, 'video/mp4') }); const latest = this.repo.m2.get(id); latest.videos[c.shot.id] = entry.id; delete latest.finalId; this.repo.m2.save(id, latest); this.repo.updateProject(id, { finalArtifactId: null }); this.repo.event(id, 'video.succeeded', { entryId: entry.id, shotId: c.shot.id });
           } catch (error) {
+            stop();
             const saved = this.repo.production.get(id, entry.id); const unknown = error instanceof UncertainSubmission && !saved.providerTaskId;
             this.repo.production.update(id, entry.id, { status: unknown ? 'unknown' : 'failed', providerTerminal: error instanceof ProviderFailed || error instanceof MissingAudioTrack, error: error instanceof AppError ? error.message : '视频生成或保存失败；若已有云任务 ID，可继续查询原任务' });
             const partial = await this.outputFile(output, error instanceof MissingAudioTrack ? 'video/mp4' : 'application/octet-stream').catch(() => null); if (partial) this.repo.production.create({ projectId: id, kind: 'video', label: `${c.shot.title} · ${error instanceof MissingAudioTrack ? '缺少音轨的原片' : '未校验输出'}`, status: 'failed', file: partial, dependencies: [entry.id], simulated: this.media.simulated });

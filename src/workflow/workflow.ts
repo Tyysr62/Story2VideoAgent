@@ -85,14 +85,14 @@ export class Workflow {
   }
   private async run(id: string, revision: number) {
     const p = this.repo.getProject(id); const videos: string[] = [];
-    await this.queue.batch('image', p.storyboard!.shots, async shot => {
+    await this.queue.batch('image', p.storyboard!.shots, async (shot, _index, stop) => {
       const image = this.repo.ensureJob({ projectId: id, revision, kind: 'image', shotId: shot.id });
-      await this.execute(image, path => this.media.image(shot, path));
+      await this.execute(image, path => this.media.image(shot, path), stop);
     });
-    await this.queue.batch('video', p.storyboard!.shots, async (shot, index) => {
+    await this.queue.batch('video', p.storyboard!.shots, async (shot, index, stop) => {
       const video = this.repo.ensureJob({ projectId: id, revision, kind: 'video', shotId: shot.id });
       const compiled = { ...shot, videoPrompt: compileVideoPrompt(p.storyboard!, shot, 'text') };
-      const path = await this.execute(video, (path, productionId) => this.media.video(compiled, path, { providerTaskId: video.providerTaskId, persistTaskId: providerTaskId => { this.repo.updateJob(video.id, { providerTaskId }); this.repo.production.update(id, productionId, { providerTaskId }); } }));
+      const path = await this.execute(video, (path, productionId) => this.media.video(compiled, path, { providerTaskId: video.providerTaskId, persistTaskId: providerTaskId => { this.repo.updateJob(video.id, { providerTaskId }); this.repo.production.update(id, productionId, { providerTaskId }); } }), stop);
       videos[index] = path;
     });
     const compose = this.repo.ensureJob({ projectId: id, revision, kind: 'compose', shotId: null });
@@ -101,7 +101,7 @@ export class Workflow {
     if (current.status !== 'generating' || current.approvedRevision !== revision) throw new AppError(409, '执行版本或确认状态已变化，停止发布成片');
     this.repo.updateProject(id, { status: 'ready', finalArtifactId: compose.id, error: null }); this.repo.event(id, 'project.ready', { revision, artifactId: compose.id });
   }
-  private async execute(job: Job, fn: (path: string, productionId: string) => Promise<void>): Promise<string> {
+  private async execute(job: Job, fn: (path: string, productionId: string) => Promise<void>, stop?: () => void): Promise<string> {
     if (job.status === 'succeeded' && job.artifactId) {
       const path = join(this.root, this.repo.getArtifact(job.artifactId).path);
       if (!existsSync(path)) throw new AppError(409, '已完成产物丢失；停止自动重新生成以避免重复费用'); return path;
@@ -127,6 +127,7 @@ export class Workflow {
       this.repo.production.update(job.projectId, archived.id, { status: 'succeeded', file: { path: a.path, bytes: a.bytes, mime: a.mime, sha256: a.sha256 }, outputId: a.id });
       this.repo.saveArtifact(a); this.repo.updateJob(job.id, { status: 'succeeded', artifactId: a.id }); this.repo.event(job.projectId, 'job.succeeded', { jobId: job.id, artifactId: a.id }); return path;
     } catch (e) {
+      stop?.();
       const failure = !this.media.simulated && job.kind === 'image' && produced ? new UncertainSubmission() : e;
       this.repo.production.update(job.projectId, archived.id, { status: failure instanceof UncertainSubmission ? 'unknown' : 'failed', error: failure instanceof AppError ? failure.message : '媒体任务失败' });
       await new ProductionService(this.repo, this.root).recoverOutputs(job.projectId);
