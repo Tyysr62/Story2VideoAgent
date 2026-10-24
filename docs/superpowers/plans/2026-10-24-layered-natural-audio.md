@@ -8,16 +8,16 @@
 
 ## 模块 1：声音层状态
 
-- [ ] `tests/audio.test.ts` 为 `updateAudioLayers` 写人声与环境共存、添加人声、删人声保留环境、独立旁白测试；先失败再实现 `src/domain/audio.ts`，通过后进入模块 2。
+- [x] `tests/audio.test.ts` 为 `updateAudioLayers` 写人声与环境共存、添加人声、删人声保留环境、独立旁白测试；先失败再实现 `src/domain/audio.ts`，通过后进入模块 2。
 
 ## 模块 2：规划与视频 Prompt
 
-- [ ] `tests/director.test.ts` 验证实际 Pi system Prompt 的混合音轨、人物互动、口语和表演指导；`tests/video-prompt.test.ts` 验证原文保留、非口述表演说明、背景持续且不压人声；先失败再实现。
-- [ ] 更新导演与编译器，声音 Prompt 版本升级。保留原产物，不自动重生成；回归任务恢复和防重复收费。定向测试通过后进入 UI。
+- [x] `tests/director.test.ts` 验证实际 Pi system Prompt 的混合音轨、人物互动、口语和表演指导；`tests/video-prompt.test.ts` 验证原文保留、非口述表演说明、背景持续且不压人声；先失败再实现。
+- [x] 更新导演与编译器，声音 Prompt 版本升级。保留原产物，不自动重生成；回归任务恢复和防重复收费。定向测试通过后进入 UI。
 
 ## 模块 3：同屏编辑与联调
 
-- [ ] 改 `tests/e2e/audio.spec.ts`：四层同时编辑、保存/重载、临时静音恢复、删除最后人声不清空环境、导出混合 Prompt、移动端；先验证旧 UI 失败。
-- [ ] 更新 `AudioEditor.tsx`、`App.tsx` 组件 key 和 README。
-- [ ] 定向浏览器测试、完整 `npm run verify` 与独立复核后合入。
-- [ ] 无在途任务才重启，核对项目/媒体哈希及 Prompt 配置变化，不触发额外付费生成。保留本地提交等待推送授权。
+- [x] 改 `tests/e2e/audio.spec.ts`：四层同时编辑、保存/重载、临时静音恢复、删除最后人声不清空环境、导出混合 Prompt、移动端；先验证旧 UI 失败。
+- [x] 更新 `AudioEditor.tsx`、`App.tsx` 组件 key 和 README。
+- [x] 定向浏览器测试、完整 `npm run verify` 与独立复核后合入。
+- [x] 无在途任务才重启，核对项目/媒体哈希及 Prompt 配置变化，不触发额外付费生成。保留本地提交等待推送授权。
