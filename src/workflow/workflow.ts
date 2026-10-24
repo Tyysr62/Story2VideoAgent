@@ -10,11 +10,12 @@ import { inspectMedia, MissingAudioTrack, type Composer, type MediaBackend } fro
 import { UncertainSubmission, ProviderFailed } from '../media/openrouter.js';
 import { ProductionService } from '../production/service.js';
 import { compileVideoPrompt, VIDEO_PROMPT_VERSION } from '../media/video-prompt.js';
+import { MediaQueue } from '../media/queue.js';
 
 type Backend = MediaBackend & { validate?(board: Storyboard): Promise<void>; estimate?(board: Storyboard): Promise<unknown>; generationConfig?(kind: Job['kind']): { model: string; parameters: Record<string, unknown> }; };
 export class Workflow {
   private active = new Map<string, Promise<void>>();
-  constructor(readonly repo: Repository, private planner: Planner, readonly media: Backend, private composer: Composer, readonly root: string) {}
+  constructor(readonly repo: Repository, private planner: Planner, readonly media: Backend, private composer: Composer, readonly root: string, private queue = new MediaQueue()) {}
   async plan(id: string, revision: number): Promise<Project> {
     const p = this.repo.getProject(id); this.repo.assertRevision(p, revision);
     if (['generating', 'planning'].includes(p.status)) throw new AppError(409, '项目正在处理，请等待当前任务完成');
@@ -84,14 +85,16 @@ export class Workflow {
   }
   private async run(id: string, revision: number) {
     const p = this.repo.getProject(id); const videos: string[] = [];
-    for (const shot of p.storyboard!.shots) {
+    await this.queue.batch('image', p.storyboard!.shots, async shot => {
       const image = this.repo.ensureJob({ projectId: id, revision, kind: 'image', shotId: shot.id });
       await this.execute(image, path => this.media.image(shot, path));
+    });
+    await this.queue.batch('video', p.storyboard!.shots, async (shot, index) => {
       const video = this.repo.ensureJob({ projectId: id, revision, kind: 'video', shotId: shot.id });
       const compiled = { ...shot, videoPrompt: compileVideoPrompt(p.storyboard!, shot, 'text') };
       const path = await this.execute(video, (path, productionId) => this.media.video(compiled, path, { providerTaskId: video.providerTaskId, persistTaskId: providerTaskId => { this.repo.updateJob(video.id, { providerTaskId }); this.repo.production.update(id, productionId, { providerTaskId }); } }));
-      videos.push(path);
-    }
+      videos[index] = path;
+    });
     const compose = this.repo.ensureJob({ projectId: id, revision, kind: 'compose', shotId: null });
     await this.execute(compose, path => this.composer.compose(videos, path, { mute: p.storyboard!.shots.map(s => !s.audio || s.audio.mode === 'silent') }));
     const current = this.repo.getProject(id); this.repo.assertRevision(current, revision);

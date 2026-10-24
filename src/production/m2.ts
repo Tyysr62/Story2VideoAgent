@@ -12,6 +12,7 @@ import { ProviderFailed, UncertainSubmission } from '../media/openrouter.js';
 import { ProductionService, publicEntry } from './service.js';
 import type { ProductionEntry } from './store.js';
 import { compileVideoPrompt, VIDEO_PROMPT_VERSION } from '../media/video-prompt.js';
+import { MediaQueue } from '../media/queue.js';
 
 export interface ReferenceImage { assetId: string; path: string; mime: string; sha256: string; }
 export interface KeyframeInput { prompt: string; references: ReferenceImage[]; }
@@ -30,7 +31,7 @@ export const fingerprint = (value: unknown) => createHash('sha256').update(JSON.
 export class M2Service {
   private active = new Set<Promise<unknown>>();
   readonly files: ProductionService;
-  constructor(readonly repo: Repository, readonly root: string, readonly media: M2Backend, readonly composer: Composer, private transport?: FrameTransport) { this.files = new ProductionService(repo, root); }
+  constructor(readonly repo: Repository, readonly root: string, readonly media: M2Backend, readonly composer: Composer, private transport?: FrameTransport, private queue = new MediaQueue()) { this.files = new ProductionService(repo, root); }
   private project(id: string) { const p = this.repo.getProject(id); if (p.workflowVersion !== 2 || !p.storyboard) throw new AppError(409, '请先启用角色参考并保存分镜'); return p; }
   private idleProject(id: string) { const p = this.project(id); if (['generating', 'planning'].includes(p.status) || this.repo.portraits.list(id).some(j => j.status === 'running')) throw new AppError(409, '项目正在生产，请等待完成'); return p; }
   config(kind: 'image' | 'video' | 'compose') { return this.media.generationConfig?.(kind) ?? { model: this.media.simulated ? `offline-${kind}` : 'unconfigured', parameters: {} }; }
@@ -80,9 +81,9 @@ export class M2Service {
       try {
         for (const c of compiled) { await this.media.validateKeyframe?.(c.references.length); for (const r of c.references) await this.files.file(id, `character:${r.assetId}`); }
         this.repo.m2.begin(id, input.requestId, requestHash);
-        for (const c of compiled) {
+        await this.queue.batch('image', compiled, async c => {
           const state = this.repo.m2.get(id); const old = state.keyframes[c.shot.id] ? this.repo.production.get(id, state.keyframes[c.shot.id]) : undefined;
-          if (!input.force && old?.inputHash === c.hash && old.status === 'succeeded') { await this.files.file(id, old.id); continue; }
+          if (!input.force && old?.inputHash === c.hash && old.status === 'succeeded') { await this.files.file(id, old.id); return; }
           const entry = this.repo.production.create({ projectId: id, kind: 'keyframe', label: `${c.shot.title} · 分镜首帧`, revision: p.revision, shotId: c.shot.id, status: 'running', prompt: c.prompt, model: c.config.model, parameters: c.config.parameters, dependencies: c.references.map(r => `character:${r.assetId}`), inputHash: c.hash, content: { roles: c.roles, references: c.references.map(({ path: _path, ...r }) => r), shot: c.shot }, simulated: this.media.simulated });
           this.repo.event(id, 'keyframe.started', { entryId: entry.id, shotId: c.shot.id });
           const output = join(this.root, 'production', id, `${entry.id}.image`); await mkdir(dirname(output), { recursive: true });
@@ -91,15 +92,15 @@ export class M2Service {
             await this.media.keyframe!({ prompt: c.prompt, references: c.references }, output);
             const bytes = await readFile(output); const mime = bytes[0] === 255 ? 'image/jpeg' : bytes.toString('ascii', 0, 4) === 'RIFF' ? 'image/webp' : 'image/png'; await validatePortrait(bytes, mime);
             this.repo.production.update(id, entry.id, { status: 'succeeded', file: { path: relative(this.root, output), mime, bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') } });
-            state.keyframes[c.shot.id] = entry.id; delete state.approval; delete state.finalId; this.repo.m2.save(id, state); this.repo.updateProject(id, { finalArtifactId: null });
+            const latest = this.repo.m2.get(id); latest.keyframes[c.shot.id] = entry.id; delete latest.approval; delete latest.finalId; this.repo.m2.save(id, latest); this.repo.updateProject(id, { finalArtifactId: null });
             this.repo.event(id, 'keyframe.succeeded', { entryId: entry.id, shotId: c.shot.id });
           } catch (error) {
             const partial = await readFile(output).catch(() => null); const unknown = error instanceof UncertainSubmission || (!this.media.simulated && Boolean(partial));
             const message = error instanceof AppError ? error.message : '首帧生成或保存失败';
             this.repo.production.update(id, entry.id, { status: unknown ? 'unknown' : 'failed', error: message, ...(partial?.length ? { file: { path: relative(this.root, output), mime: 'application/octet-stream', bytes: partial.length, sha256: createHash('sha256').update(partial).digest('hex') } } : {}) });
-            this.repo.event(id, 'keyframe.failed', { entryId: entry.id, shotId: c.shot.id, unknown }); break;
+            this.repo.event(id, 'keyframe.failed', { entryId: entry.id, shotId: c.shot.id, unknown }); return false;
           }
-        }
+        });
       } finally { this.repo.updateProject(id, { status: 'awaiting_approval' }); }
     })();
     this.active.add(work); try { await work; } finally { this.active.delete(work); } return this.view(id);
@@ -142,11 +143,11 @@ export class M2Service {
         if (newInputs.length) await this.media.validateImageToVideo?.({ ...p.storyboard!, shots: newInputs.map(c => c.shot) });
         for (const c of compiled) await this.files.file(id, c.frame.id);
         if (this.view(id).manifestHash !== manifestHash) throw new AppError(409, '生产输入已变化');
-        this.repo.m2.begin(id, input.requestId, requestHash); let failed = false;
-        for (const c of compiled) {
+        this.repo.m2.begin(id, input.requestId, requestHash);
+        const succeeded = await this.queue.batch('video', compiled, async c => {
           const state = this.repo.m2.get(id); const existing = this.repo.production.list(id).filter(e => e.kind === 'video' && e.inputHash === c.hash);
           const selected = state.videos[c.shot.id] ? this.repo.production.get(id, state.videos[c.shot.id]) : undefined;
-          if (!input.force && selected?.inputHash === c.hash && selected.status === 'succeeded') { await this.files.file(id, selected.id); continue; }
+          if (!input.force && selected?.inputHash === c.hash && selected.status === 'succeeded') { await this.files.file(id, selected.id); return; }
           const resuming = [...existing].reverse().find(e => e.providerTaskId && !e.providerTerminal && e.status !== 'succeeded');
           const entry = resuming ?? this.repo.production.create({ projectId: id, kind: 'video', label: `${c.shot.title} · 首帧视频`, revision: p.revision, shotId: c.shot.id, status: 'running', prompt: c.prompt, model: c.config.model, parameters: { ...c.config.parameters, duration: c.shot.duration, frame_type: 'first_frame', promptVersion: VIDEO_PROMPT_VERSION, audioMode: c.shot.audio?.mode ?? 'silent' }, dependencies: [c.frame.id], inputHash: c.hash, content: { shot: c.shot, audioProfile: p.storyboard!.audioProfile, firstFrameSha: c.frame.file!.sha256, approvalHash: manifestHash }, simulated: this.media.simulated });
           this.repo.production.update(id, entry.id, { status: 'running', error: undefined }); this.repo.event(id, 'video.started', { entryId: entry.id, shotId: c.shot.id, resuming: Boolean(resuming) });
@@ -156,15 +157,15 @@ export class M2Service {
             const firstFrameUrl = !entry.providerTaskId ? this.transport ? await this.transport.frame(c.frame, (await this.files.file(id, c.frame.id)).path) : this.media.simulated ? 'https://offline.invalid/fixture.png' : undefined : undefined;
             await this.media.video({ ...c.shot, videoPrompt: c.prompt }, output, { providerTaskId: entry.providerTaskId, firstFrameUrl, persistTaskId: providerTaskId => { this.repo.production.update(id, entry.id, { providerTaskId }); } });
             const info = await inspectMedia(output); if (c.shot.audio && c.shot.audio.mode !== 'silent' && !info.hasAudio) throw new MissingAudioTrack();
-            this.repo.production.update(id, entry.id, { status: 'succeeded', file: await this.outputFile(output, 'video/mp4') }); state.videos[c.shot.id] = entry.id; delete state.finalId; this.repo.m2.save(id, state); this.repo.updateProject(id, { finalArtifactId: null }); this.repo.event(id, 'video.succeeded', { entryId: entry.id, shotId: c.shot.id });
+            this.repo.production.update(id, entry.id, { status: 'succeeded', file: await this.outputFile(output, 'video/mp4') }); const latest = this.repo.m2.get(id); latest.videos[c.shot.id] = entry.id; delete latest.finalId; this.repo.m2.save(id, latest); this.repo.updateProject(id, { finalArtifactId: null }); this.repo.event(id, 'video.succeeded', { entryId: entry.id, shotId: c.shot.id });
           } catch (error) {
             const saved = this.repo.production.get(id, entry.id); const unknown = error instanceof UncertainSubmission && !saved.providerTaskId;
             this.repo.production.update(id, entry.id, { status: unknown ? 'unknown' : 'failed', providerTerminal: error instanceof ProviderFailed || error instanceof MissingAudioTrack, error: error instanceof AppError ? error.message : '视频生成或保存失败；若已有云任务 ID，可继续查询原任务' });
             const partial = await this.outputFile(output, error instanceof MissingAudioTrack ? 'video/mp4' : 'application/octet-stream').catch(() => null); if (partial) this.repo.production.create({ projectId: id, kind: 'video', label: `${c.shot.title} · ${error instanceof MissingAudioTrack ? '缺少音轨的原片' : '未校验输出'}`, status: 'failed', file: partial, dependencies: [entry.id], simulated: this.media.simulated });
-            this.repo.event(id, 'video.failed', { entryId: entry.id, shotId: c.shot.id, unknown }); failed = true; break;
+            this.repo.event(id, 'video.failed', { entryId: entry.id, shotId: c.shot.id, unknown }); return false;
           }
-        }
-        if (!failed && this.view(id).shots.every(s => s.videoCurrent)) {
+        });
+        if (succeeded && this.view(id).shots.every(s => s.videoCurrent)) {
           const state = this.repo.m2.get(id); const clips = p.storyboard!.shots.map(s => this.repo.production.get(id, state.videos[s.id])); const inputs: string[] = [];
           for (const clip of clips) inputs.push((await this.files.file(id, clip.id)).path);
           const options = { mute: p.storyboard!.shots.map(s => !s.audio || s.audio.mode === 'silent') };

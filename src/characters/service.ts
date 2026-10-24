@@ -9,13 +9,14 @@ import { UncertainSubmission } from '../media/openrouter.js';
 import { ProductionService } from '../production/service.js';
 import type { ReferenceImage } from '../production/m2.js';
 import { validatePortrait } from './images.js';
+import { MediaQueue } from '../media/queue.js';
 
 export interface PortraitBackend { readonly simulated: boolean; readonly imageModel?: string; portraitConfig?(): { model: string; parameters: Record<string, string | number | boolean> }; validatePortraitReference?(): Promise<unknown>; portrait(prompt: string, output: string, reference?: ReferenceImage): Promise<void>; estimatePortrait?(): Promise<unknown>; }
 export const portraitRequestSchema = z.object({ revision: z.number().int().nonnegative(), characterId: z.string().min(1).max(100), lookId: z.string().min(1).max(100), requestId: z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/), acceptCost: z.boolean(), reference: z.object({ lookId: z.string().min(1).max(100), lookVersionId: z.string().min(1).max(100) }).strict().optional(), editInstruction: z.string().trim().max(2000).default('') }).strict();
 export class CharacterService {
   readonly jobs;
   private active = new Set<Promise<unknown>>();
-  constructor(readonly repo: Repository, readonly root: string, private backend: PortraitBackend) { this.jobs = repo.portraits; }
+  constructor(readonly repo: Repository, readonly root: string, private backend: PortraitBackend, private queue = new MediaQueue()) { this.jobs = repo.portraits; }
   assertIdle(projectId: string) {
     if (this.jobs.list(projectId).some(j => j.status === 'running')) throw new AppError(409, '角色图片正在生成，请等待完成');
     const p = this.repo.getProject(projectId);
@@ -98,7 +99,7 @@ export class CharacterService {
       const directory = join(this.root, 'characters', projectId, 'pending'); const output = join(directory, `${job.id}.image`);
       try {
         await mkdir(directory, { recursive: true });
-        await this.backend.portrait(prompt, output, reference); produced = true;
+        await this.queue.run('image', () => this.backend.portrait(prompt, output, reference)); produced = true;
         const bytes = await readFile(output); const mime = bytes[0] === 255 ? 'image/jpeg' : bytes.toString('ascii', 0, 4) === 'RIFF' ? 'image/webp' : 'image/png';
         const info = await validatePortrait(bytes, mime); const asset = await this.storeImage(projectId, bytes, info, 'generated', inputSnapshot);
         this.repo.characters.updateLook(projectId, input.revision, character.id, look.id, { imageAssetId: asset.id });

@@ -1,4 +1,4 @@
-import { test, expect, afterEach } from 'vitest';
+import { test, expect, afterEach, vi } from 'vitest';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -51,14 +51,14 @@ test('a requested voice clip without an audio track is retained as failed and ne
 });
 
 const close: (() => Promise<void>)[] = []; afterEach(async () => { for (const f of close.splice(0)) await f(); });
-async function setup(fail = false) {
+async function setup(fail = false, count = 2) {
   const root = await mkdtemp(join(tmpdir(), 'story-m2-')); const repo = new Repository(join(root, 'app.db')); const mock = new MockMedia(); let calls = 0;
   const backend: M2Backend = { ...mock, simulated: true, generationConfig: (kind: string) => ({ model: `fixture-${kind}`, parameters: { resolution: '1K' } }),
     validateKeyframe: async () => ({ provider: 'fixture' }),
     keyframe: async (input: any, output: string) => { calls++; if (fail) throw new UncertainSubmission(); await mock.image({ ...board(1).shots[0], imagePrompt: input.prompt }, output); },
     image: mock.image.bind(mock), video: mock.video.bind(mock),
   };
-  const p = repo.createProject('旧信重逢', 2); repo.saveStoryboard(p.id, 0, board(2), true);
+  const p = repo.createProject('旧信重逢', 2); repo.saveStoryboard(p.id, 0, board(count), true);
   const c = repo.characters.snapshot(p.id).characters[0]; const look = c.looks[0];
   const portrait = await sharp({ create: { width: 64, height: 64, channels: 3, background: '#5890ab' } }).png().toBuffer();
   const chars = new CharacterService(repo, root, { simulated: true, portrait: async () => {} });
@@ -69,6 +69,60 @@ async function setup(fail = false) {
   close.push(async () => { await service.idle(); repo.close(); await rm(root, { recursive: true, force: true }); });
   return { root, repo, service, id: p.id, calls: () => calls, backend };
 }
+
+const gate = () => { let release!: () => void; const promise = new Promise<void>(r => { release = r; }); return { promise, release }; };
+
+test('keyframes overlap up to three calls and retain every selection when finishing out of order', async () => {
+  const { service, id, backend, repo } = await setup(false, 4); const gates = Array.from({ length: 4 }, gate); const started: number[] = []; let active = 0; let peak = 0;
+  const original = backend.keyframe!;
+  backend.keyframe = async (input, output) => { const n = started.length; started.push(n); peak = Math.max(peak, ++active); try { await gates[n].promise; await original(input, output); } finally { active--; } };
+  const work = service.frames(id, { revision: 2, shotIds: board(4).shots.map(s => s.id), requestId: 'parallel-frames', acceptCost: true });
+  try {
+    await vi.waitFor(() => expect(started).toHaveLength(3)); expect(peak).toBe(3); expect(repo.getProject(id).status).toBe('generating');
+    gates[1].release(); await vi.waitFor(() => expect(started).toHaveLength(4));
+    gates[3].release(); gates[2].release();
+  } finally { gates.forEach(g => g.release()); await work; }
+  expect(service.view(id).shots.map(s => s.current)).toEqual([true, true, true, true]);
+  expect(Object.keys(repo.m2.get(id).keyframes)).toHaveLength(4); expect(peak).toBe(3);
+});
+
+test('parallel videos preserve all selections and compose once in storyboard order after draining', async () => {
+  const { root, service, id, backend, repo } = await setup(false, 4); const shotIds = board(4).shots.map(s => s.id);
+  await service.frames(id, { revision: 2, shotIds, requestId: 'video-parallel-frames', acceptCost: true });
+  await service.approve(id, 2, service.view(id).manifestHash);
+  const gates = Array.from({ length: 4 }, gate); const started: string[] = []; const original = backend.video; let active = 0; let peak = 0; const compositions: string[][] = [];
+  backend.video = async (shot, output, task) => { const n = shotIds.indexOf(shot.id); started.push(shot.id); peak = Math.max(peak, ++active); try { task!.persistTaskId(`paid-${shot.id}`); await gates[n].promise; await original(shot, output, task); } finally { active--; } };
+  const videos = new M2Service(repo, root, backend, { compose: async (paths, output) => { expect(active).toBe(0); compositions.push(paths); await writeFile(output, 'composed'); } });
+  const work = videos.videos(id, { revision: 2, shotIds, requestId: 'parallel-videos', acceptCost: true, manifestHash: videos.view(id).manifestHash });
+  try {
+    await vi.waitFor(() => expect(started).toHaveLength(3)); expect(compositions).toHaveLength(0);
+    gates[2].release(); await vi.waitFor(() => expect(started).toHaveLength(4)); gates[3].release(); gates[1].release();
+  } finally { gates.forEach(g => g.release()); await work; }
+  expect(peak).toBe(3); expect(videos.view(id).shots.every(s => s.videoCurrent)).toBe(true);
+  expect(compositions).toEqual([shotIds.map(s => join(root, repo.production.get(id, repo.m2.get(id).videos[s]).file!.path))]);
+  expect(repo.getProject(id).status).toBe('ready');
+});
+
+test('a parallel failure stops unstarted videos, keeps the project busy while draining and resumes saved IDs', async () => {
+  const { root, service, id, backend, repo } = await setup(false, 4); const shotIds = board(4).shots.map(s => s.id);
+  await service.frames(id, { revision: 2, shotIds, requestId: 'drain-frames', acceptCost: true }); await service.approve(id, 2, service.view(id).manifestHash);
+  const gates = Array.from({ length: 4 }, gate); const started: string[] = []; const original = backend.video; let submits = 0;
+  backend.video = async (shot, output, task) => { started.push(shot.id); if (!task!.providerTaskId) { submits++; task!.persistTaskId(`cloud-${shot.id}`); } await gates[shotIds.indexOf(shot.id)].promise; if (shot.id === 'shot-1') throw Error('poll timeout'); await original(shot, output, task); };
+  const videos = new M2Service(repo, root, backend, new FfmpegComposer()); const manifestHash = videos.view(id).manifestHash;
+  let settled = false;
+  const work = videos.videos(id, { revision: 2, shotIds, requestId: 'drain-videos', acceptCost: true, manifestHash }).finally(() => { settled = true; });
+  try {
+    await vi.waitFor(() => expect(started).toHaveLength(3)); gates[0].release();
+    await vi.waitFor(() => expect(repo.production.list(id).find(e => e.providerTaskId === 'cloud-shot-1')?.status).toBe('failed'));
+    expect(settled).toBe(false); expect(repo.getProject(id).status).toBe('generating');
+    await expect(videos.videos(id, { revision: 2, shotIds: ['shot-2'], requestId: 'overlap', acceptCost: true, manifestHash })).rejects.toThrow(/正在生产/);
+  } finally { gates.forEach(g => g.release()); await work; }
+  expect([...started].sort()).toEqual(shotIds.slice(0, 3)); expect(repo.getProject(id).status).toBe('awaiting_approval');
+  backend.video = async (shot, path, task) => { expect(task!.providerTaskId).toBe('cloud-shot-1'); await original(shot, path, task); };
+  await videos.videos(id, { revision: 2, shotIds: ['shot-1'], requestId: 'resume-parallel', acceptCost: true, manifestHash });
+  expect(submits).toBe(3); expect(videos.view(id).shots.slice(0, 3).every(s => s.videoCurrent)).toBe(true);
+  expect(repo.production.list(id).filter(e => e.kind === 'video' && e.shotId === 'shot-1')).toHaveLength(1);
+});
 test('keyframes use role images, keep every candidate and prompt, and reject stale group approval', async () => {
   const { repo, service, id, calls } = await setup();
   const input = service.compile(id, 'shot-1'); expect(input.references).toHaveLength(1); expect(input.prompt).toContain('参考图 1');
