@@ -23,3 +23,14 @@ test('ambient permits sound effects but explicitly excludes unintended voices an
   const b = validateStoryboard(board(1)); b.shots[0].audio = { ...silentAudio(), mode: 'ambient', ambience: '雨声', soundEffects: ['翻信声'] };
   const prompt = compileVideoPrompt(b, b.shots[0], 'first_frame'); expect(prompt).toContain('雨声'); expect(prompt).toContain('翻信声'); expect(prompt).toContain('无人声'); expect(prompt).toContain('无配乐');
 });
+
+test('layers continuous ambience beneath exact colloquial lines and performs rather than reads delivery', () => {
+  const b = validateStoryboard(board(1));
+  const text = '哎？这封你还留着啊……';
+  b.shots[0].audio = { ...silentAudio(), mode: 'speech', dialogue: [{ characterId: 'fox', text, delivery: '先轻笑、吸气，停半拍，带笑轻声问', placement: 'on_screen' }], ambience: '窗外细雨', soundEffects: ['沙沙，翻动旧信'] };
+  const compiled = compileVideoPrompt(b, b.shots[0], 'first_frame');
+  expect(compiled).toContain(JSON.stringify(text)); expect(compiled).toContain('窗外细雨'); expect(compiled).toContain('沙沙，翻动旧信');
+  expect(compiled).toContain('声音分层'); expect(compiled).toContain('人声期间'); expect(compiled).toContain('不能盖住');
+  expect(compiled).toContain('执行而不朗读表演说明'); expect(compiled).toContain('轻笑');
+  expect(compiled).not.toContain('无额外环境声'); expect(compiled).not.toContain('仅环境声与音效');
+});

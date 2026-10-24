@@ -2,6 +2,22 @@ import { test, expect } from 'vitest';
 import { Repository } from '../src/storage/repository.js';
 import { validateStoryboard } from '../src/domain/storyboard.js';
 import { board } from './fixtures.js';
+import { silentAudio, updateAudioLayers } from '../src/domain/audio.js';
+
+test('independent sound layers derive speech while retaining ambience and effects', () => {
+  const background = updateAudioLayers(silentAudio(), { ambience: '窗外细雨', soundEffects: ['沙沙，纸张轻响'] });
+  expect(background.mode).toBe('ambient');
+  const mixed = updateAudioLayers(background, { dialogue: [{ characterId: 'fox', text: '哎？这封你还留着啊……', delivery: '先吸气，停半拍，再带笑轻声问', placement: 'on_screen' }] });
+  expect(mixed).toMatchObject({ mode: 'speech', ambience: background.ambience, soundEffects: background.soundEffects });
+  expect(validateStoryboard({ ...board(1), shots: [{ ...board(1).shots[0], audio: mixed }] }).shots[0].audio).toEqual(mixed);
+});
+
+test('removing the last voice retains the environment and removing dialogue retains narration', () => {
+  const mixed = updateAudioLayers(silentAudio(), { dialogue: [{ characterId: 'fox', text: '嗯，哪舍得扔。', delivery: '笑着，句尾放轻', placement: 'on_screen' }], narration: { text: '四十年后。', delivery: '简短' }, ambience: '风声', soundEffects: ['脚步嗒嗒'] });
+  const narratorOnly = updateAudioLayers(mixed, { dialogue: [] }); expect(narratorOnly.mode).toBe('speech');
+  const ambientOnly = updateAudioLayers(narratorOnly, { narration: null });
+  expect(ambientOnly).toMatchObject({ mode: 'ambient', dialogue: [], narration: null, ambience: '风声', soundEffects: ['脚步嗒嗒'] });
+});
 
 const spoken = () => ({ mode: 'speech', dialogue: [{ characterId: 'fox', text: '这封信，终于送到了。', delivery: '温柔', placement: 'on_screen' }], narration: null, ambience: '微风', soundEffects: ['纸张摩擦'], music: 'none' });
 function input() { const b: any = board(); b.audioProfile = { narratorVoice: '温暖的普通话女声', characterVoices: [{ characterId: 'fox', description: '清澈、轻快的普通话声音' }] }; b.shots[0].audio = spoken(); return b; }

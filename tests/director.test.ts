@@ -6,6 +6,15 @@ import type { CharacterLibrary } from '../src/domain/characters.js';
 import { getDeclaredTools } from '@earendil-works/pi-ai';
 
 describe('actual Pi SDK with an injected offline model transport', () => {
+  test('delivers layered sound and natural character interaction guidance without dropping mixed audio', async () => {
+    const b = { ...board(1), shots: [{ ...board(1).shots[0], audio: { mode: 'speech', dialogue: [{ characterId: 'fox', text: '哎？这封你还留着啊……', delivery: '轻笑后，停半拍再问', placement: 'on_screen' }], narration: null, ambience: '雨声', soundEffects: ['沙沙，纸张轻响'], music: 'none' } }] };
+    let system = ''; const director = new PiDirector({ apiKey: 'offline-test', stream: scriptedStream(b) });
+    const result = await director.plan('两人翻到旧信，自然地聊天，背景有雨声。', undefined, undefined, trace => { system = trace.systemPrompt; });
+    expect(result.shots[0].audio).toEqual(b.shots[0].audio);
+    expect(system).toContain('环境声与人物声音不是二选一'); expect(system).toContain('短句互动');
+    expect(system).toContain('语气词'); expect(system).toContain('不机械堆砌'); expect(system).toContain('轻笑');
+    expect(system).toContain('不能念出'); expect(system).toContain('停顿');
+  });
   test('exposes structured sound planning to Pi and normalizes missing legacy audio to silence', async () => {
     let system = ''; let toolSchema = '';
     const transport = scriptedStream(board(1));

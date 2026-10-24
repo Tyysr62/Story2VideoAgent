@@ -22,6 +22,11 @@ export const audioPlanSchema = z.object({
 export type AudioPlan = z.infer<typeof audioPlanSchema>;
 export type AudioProfile = z.infer<typeof audioProfileSchema>;
 export function silentAudio(): AudioPlan { return { mode: 'silent', dialogue: [], narration: null, ambience: '', soundEffects: [], music: 'none' }; }
+/** Human voices and background layers coexist; editing either never clears the other. */
+export function updateAudioLayers(audio: AudioPlan, patch: Partial<Omit<AudioPlan, 'mode'>>): AudioPlan {
+  const next = { ...audio, ...patch };
+  return { ...next, mode: next.dialogue.length || next.narration ? 'speech' : 'ambient' };
+}
 export function speechLengthWarning(audio: AudioPlan | undefined, seconds: number): string | null {
   if (audio?.mode !== 'speech') return null;
   const length = [...audio.dialogue.map(d => d.text), audio.narration?.text ?? ''].join('').replace(/[\s，。！？、,.!?]/gu, '').length;
