@@ -65,7 +65,9 @@ test('real Pi HTTP transport → HTTP approval → cloud adapter fixtures → re
   const pcm = join(root, 'final-audio.pcm');
   await runFfmpeg(['-ss', '0.2', '-i', join(root, final.path), '-t', '0.15', '-map', '0:a:0', '-f', 's16le', pcm]);
   expect((await readFile(pcm)).some(byte => byte !== 0)).toBe(true);
-  expect(repo.production.list(id).find(e => e.kind === 'video')?.prompt).toContain('那封信，他保存了四十年。');
+  const videoEntries = repo.production.list(id).filter(e => e.kind === 'video');
+  expect(videoEntries.find(e => e.shotId === b.shots[0].id)?.prompt).toContain('那封信，他保存了四十年。');
+  expect(videoEntries.find(e => e.shotId === b.shots[1].id)?.prompt).toContain('完全静音');
   const range = await app.inject({ url: `/api/artifacts/${final.id}`, headers: { range: 'bytes=0-99' } }); expect(range.statusCode).toBe(206); expect(range.rawPayload.length).toBe(100);
 });
 

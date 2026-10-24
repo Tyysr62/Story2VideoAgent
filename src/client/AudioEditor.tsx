@@ -1,7 +1,7 @@
 import type { Storyboard } from '../domain/storyboard.js';
-import { silentAudio, speechLengthWarning, type AudioPlan } from '../domain/audio.js';
+import { silentAudio, speechLengthWarning, updateAudioLayers, type AudioPlan } from '../domain/audio.js';
 import './audio.css';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 function SoundEffects({ value, disabled, onChange }: { value: string[]; disabled: boolean; onChange(value: string[]): void }) {
   const serialized = value.join('\n'); const [raw, setRaw] = useState(serialized);
@@ -12,22 +12,25 @@ function SoundEffects({ value, disabled, onChange }: { value: string[]; disabled
 type Role = Storyboard['characters'][number];
 export function AudioEditor({ shot, characters, disabled, onChange }: { shot: Storyboard['shots'][number]; characters: Role[]; disabled: boolean; onChange(audio: AudioPlan): void }) {
   const audio = shot.audio ?? silentAudio(); const warning = speechLengthWarning(audio, shot.duration);
-  const update = (patch: Partial<AudioPlan>) => onChange({ ...audio, ...patch });
+  const audibleDraft = useRef<AudioPlan | null>(null);
+  const update = (patch: Partial<Omit<AudioPlan, 'mode'>>) => onChange(updateAudioLayers(audio, patch));
   function line(index: number, patch: Partial<AudioPlan['dialogue'][number]>) { update({ dialogue: audio.dialogue.map((d, i) => i === index ? { ...d, ...patch } : d) }); }
   return <section className="audio-editor" aria-label={`${shot.title} 声音设计`}>
-    <label>声音模式<select aria-label="声音模式" value={audio.mode} disabled={disabled} onChange={e => {
-      const mode = e.target.value as AudioPlan['mode'];
-      onChange(mode === 'silent' ? silentAudio() : { ...audio, mode, ...(mode === 'ambient' ? { dialogue: [], narration: null } : {}) });
-    }}><option value="silent">完全静音</option><option value="ambient">仅环境声 / 音效</option><option value="speech">角色台词 / 旁白</option></select></label>
+    <label className="audio-toggle"><input type="checkbox" aria-label="开启声音" checked={audio.mode !== 'silent'} disabled={disabled} onChange={e => {
+      if (e.target.checked) onChange(updateAudioLayers(audibleDraft.current ?? silentAudio(), {}));
+      else { audibleDraft.current = audio; onChange(silentAudio()); }
+    }}/>开启声音</label>
+    <p className="muted">环境声、音效、角色台词和旁白可以同时存在。说话时背景声自然持续，并给人声留出空间。</p>
     {!shot.audio && <p className="muted">历史镜头未设置声音，沿用静音。</p>}
-    {audio.mode !== 'silent' && <><label>环境声<textarea aria-label="环境声" value={audio.ambience} maxLength={1000} disabled={disabled} onChange={e => update({ ambience: e.target.value })} placeholder="例如：安静的室内底噪、窗外细雨" rows={2}/></label><SoundEffects value={audio.soundEffects} disabled={disabled} onChange={soundEffects => update({ soundEffects })}/></>}
-    {audio.mode === 'speech' && <>
-      {audio.dialogue.map((d, i) => <fieldset key={i} className="dialogue-line"><legend>角色台词 {i + 1}</legend><label>说话角色<select aria-label={`台词 ${i + 1} 说话角色`} value={d.characterId} disabled={disabled} onChange={e => line(i, { characterId: e.target.value })}><option value="">请选择角色</option>{characters.map(c => <option key={c.id} value={c.id}>@{c.name}</option>)}</select></label><label>发声位置<select aria-label={`台词 ${i + 1} 发声位置`} value={d.placement} disabled={disabled} onChange={e => line(i, { placement: e.target.value as 'on_screen' | 'off_screen' })}><option value="on_screen">画内说话（角色须出镜）</option><option value="off_screen">画外声音</option></select></label><label>准确台词<textarea aria-label={`台词 ${i + 1} 内容`} value={d.text} maxLength={2000} disabled={disabled} onChange={e => line(i, { text: e.target.value })} rows={2}/></label><label>语气 / 表达<input aria-label={`台词 ${i + 1} 语气`} value={d.delivery} maxLength={1000} disabled={disabled} onChange={e => line(i, { delivery: e.target.value })}/></label><button disabled={disabled} onClick={() => update({ dialogue: audio.dialogue.filter((_, j) => j !== i) })}>删除台词 {i + 1}</button></fieldset>)}
+    {audio.mode !== 'silent' && <><strong className="audio-layer-title">环境与动作</strong><label>环境声<textarea aria-label="环境声" value={audio.ambience} maxLength={1000} disabled={disabled} onChange={e => update({ ambience: e.target.value })} placeholder="例如：窗外细雨，人物说话时继续轻柔铺底" rows={2}/></label><SoundEffects value={audio.soundEffects} disabled={disabled} onChange={soundEffects => update({ soundEffects })}/></>}
+    {audio.mode !== 'silent' && <>
+      <strong className="audio-layer-title">人物声音（可选）</strong>
+      {audio.dialogue.map((d, i) => <fieldset key={i} className="dialogue-line"><legend>角色台词 {i + 1}</legend><label>说话角色<select aria-label={`台词 ${i + 1} 说话角色`} value={d.characterId} disabled={disabled} onChange={e => line(i, { characterId: e.target.value })}><option value="">请选择角色</option>{characters.map(c => <option key={c.id} value={c.id}>@{c.name}</option>)}</select></label><label>发声位置<select aria-label={`台词 ${i + 1} 发声位置`} value={d.placement} disabled={disabled} onChange={e => line(i, { placement: e.target.value as 'on_screen' | 'off_screen' })}><option value="on_screen">画内说话（角色须出镜）</option><option value="off_screen">画外声音</option></select></label><label>准确台词<textarea aria-label={`台词 ${i + 1} 内容`} value={d.text} maxLength={2000} disabled={disabled} onChange={e => line(i, { text: e.target.value })} placeholder="例如：哎？这封你还留着啊……" rows={2}/></label><label>语气 / 表达<input aria-label={`台词 ${i + 1} 语气`} value={d.delivery} maxLength={1000} disabled={disabled} onChange={e => line(i, { delivery: e.target.value })} placeholder="例如：先轻笑、停半拍，再带笑轻声问（不念出说明）"/></label><button disabled={disabled} onClick={() => update({ dialogue: audio.dialogue.filter((_, j) => j !== i) })}>删除台词 {i + 1}</button></fieldset>)}
       <button disabled={disabled || audio.dialogue.length >= 20 || !characters.length} onClick={() => update({ dialogue: [...audio.dialogue, { characterId: shot.characterIds[0] ?? characters[0]?.id ?? '', text: '', delivery: '', placement: shot.characterIds.length ? 'on_screen' : 'off_screen' }] })}>添加角色台词</button>
       <label>旁白内容<textarea aria-label="旁白内容" value={audio.narration?.text ?? ''} maxLength={2000} disabled={disabled} onChange={e => update({ narration: e.target.value.trim() ? { text: e.target.value, delivery: audio.narration?.delivery ?? '' } : null })} placeholder="可留空；旁白发生在画外，不要求人物张嘴" rows={2}/></label>
       {audio.narration && <label>旁白语气<input aria-label="旁白语气" value={audio.narration.delivery} maxLength={1000} disabled={disabled} onChange={e => update({ narration: { ...audio.narration!, delivery: e.target.value } })}/></label>}
       {warning && <p className="notice">{warning}</p>}
-      <p className="muted">台词与旁白按顺序发声。保存时检查角色绑定；原生生成的发音、口型与逐字准确性需试听确认。</p>
+      <p className="muted">语气词写在准确台词中；呼吸、轻笑、叹息和停顿写在表达中；纸响、敲门等写在音效中。对白与旁白先后发声，背景声与动作音效可以同步。请为动作和反应留出时间。</p>
     </>}
   </section>;
 }
