@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { OpenRouterMedia, DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL } from '../src/media/openrouter.js';
 import { board } from './fixtures.js';
+import type { Storyboard } from '../src/domain/storyboard.js';
 
 test('failed image response preserves redacted diagnostics without exposing upstream payload or resubmitting', async () => {
   const root = await mkdtemp(join(tmpdir(), 'story-image-error-')); let calls = 0;
@@ -77,7 +78,7 @@ test('uses real OpenRouter image/video contracts and persists task ID before pol
     expect(saved).toEqual(['job-real-id']); expect((await readFile(join(root, 'video.mp4'))).length).toBe(3);
     const request = JSON.parse(String(s.requests.find(x => x.url.endsWith('/videos'))!.init!.body));
     expect(request).toMatchObject({ model: DEFAULT_VIDEO_MODEL, duration: 5, resolution: '480p' });
-    expect(request).not.toHaveProperty('generate_audio');
+    expect(request.generate_audio).toBe(false);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
@@ -199,4 +200,24 @@ test('an explicit 1K override is retained for image and portrait configuration',
   const media = new OpenRouterMedia({ apiKey: 'fixture', imageResolution: '1K' });
   expect(media.portraitConfig().parameters.resolution).toBe('1K');
   expect(media.generationConfig('image').parameters.resolution).toBe('1K');
+});
+
+
+test.each(['ambient', 'speech', 'silent'] as const)('HeyGen requests explicitly express %s sound intent despite the catalogue default', async mode => {
+  const root = await mkdtemp(join(tmpdir(), 'heygen-audio-')); const requests: any[] = [];
+  try {
+    const media = new OpenRouterMedia({ apiKey: 'fixture', pollMs: 0, fetcher: async (input, init) => {
+      const url = String(input);
+      if (url.endsWith('/videos/models')) return Response.json({ data: [{ ...catalog.data[0], generate_audio: false }] });
+      if (init?.method === 'POST') { requests.push(JSON.parse(String(init.body))); return Response.json({ id: 'audio-fixture' }); }
+      if (url.includes('/content')) return new Response(new Uint8Array([1]));
+      return Response.json({ status: 'completed' });
+    } });
+    const shot: Storyboard['shots'][number] = board(1).shots[0]; shot.duration = 6;
+    shot.audio = { mode, dialogue: [], narration: mode === 'speech' ? { text: '这封信，我一直留着。', delivery: '清晰' } : null, ambience: mode === 'ambient' ? '清晰的脚步声' : '', soundEffects: [], music: 'none' };
+    await media.video(shot, join(root, 'video.mp4'), { firstFrameUrl: 'https://bucket.example/frame.png', persistTaskId() {} });
+    expect(requests).toHaveLength(1); expect(requests[0].generate_audio).toBe(mode !== 'silent');
+    expect(requests[0].frame_images[0].frame_type).toBe('first_frame');
+    expect(media.generationConfig('video').parameters.audioStrategy).toBe('heygen-openrouter-explicit-v1');
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
